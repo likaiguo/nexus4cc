@@ -82,13 +82,16 @@ while true; do
     # -c = continue last session（从 DATA_DIR 里的历史续接）
     claude -c --dangerously-skip-permissions || true
     echo ""
-    echo "[Nexus] Claude exited.  r=restart(continue)  n=new session  q=quit"
+    echo "[Nexus] Claude exited.  r=restart(continue)  n=new session  b=bash shell  q=quit window"
     read -r REPLY
     case "$REPLY" in
         n) continue ;;  # 不带 -c，开新会话
-        q|"") break ;;
+        b) exec bash -i ;;  # 切换到 bash，保持窗口不关闭
+        q) break ;;  # 退出脚本，关闭窗口
         *) continue ;;  # 默认续接
     esac
 done
 
 echo "[Nexus] Session ended."
+# 退出后启动 bash 保持窗口打开（防止用户意外关闭窗口）
+exec bash -i

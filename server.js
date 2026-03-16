@@ -97,9 +97,12 @@ app.post('/api/sessions', authMiddleware, (req, res) => {
     shellCmd = 'bash';
   } else {
     // claude mode: use profile if specified, otherwise default claude without profile
-    shellCmd = profile
-      ? `bash /app/nexus-run-claude.sh ${profile} ${cwd}`
-      : `bash -c 'cd "${cwd}" && claude -c --dangerously-skip-permissions'`;
+    if (profile) {
+      shellCmd = `bash /app/nexus-run-claude.sh ${profile} ${cwd}`;
+    } else {
+      // 启动 claude，退出后进入交互式 bash（保持窗口不关闭）
+      shellCmd = `bash -c 'cd "${cwd}" && claude -c --dangerously-skip-permissions || true; exec bash -i'`;
+    }
   }
 
   const cmd = `tmux new-window -t ${TMUX_SESSION} -c "${cwd}" -n "${name}" "${shellCmd}"`;
