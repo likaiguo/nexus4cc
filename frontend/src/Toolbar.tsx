@@ -57,11 +57,17 @@ const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
 export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, selectionMode, onToggleSelectionMode, onOpenSettings }: Props) {
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
-  const [collapsed, setCollapsed]     = useState(() => localStorage.getItem(COLLAPSED_KEY) === 'true')
+  const [collapsed, setCollapsed]     = useState(() => {
+    const saved = localStorage.getItem(COLLAPSED_KEY)
+    if (saved !== null) return saved === 'true'
+    // Default: collapsed on PC (has keyboard), expanded on mobile
+    return window.innerWidth >= 1024
+  })
   const [editing, setEditing]         = useState(false)
   const [drag, setDrag]               = useState<DragState | null>(null)
   const [savedFlash, setSavedFlash]   = useState(false)
   const [isPC, setIsPC]               = useState(false)
+  const [isWidePC, setIsWidePC]       = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1024)
   const rootRef = useRef<HTMLDivElement>(null)
   const editScrollRef = useRef<HTMLDivElement>(null)
   const isDraggingMouse = useRef(false)
@@ -71,7 +77,10 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
 
   // 检测 PC/移动端
   useEffect(() => {
-    const checkWidth = () => setIsPC(window.innerWidth >= PC_BREAKPOINT)
+    const checkWidth = () => {
+      setIsPC(window.innerWidth >= PC_BREAKPOINT)
+      setIsWidePC(window.innerWidth >= 1024)
+    }
     checkWidth()
     window.addEventListener('resize', checkWidth)
     return () => window.removeEventListener('resize', checkWidth)
@@ -361,24 +370,26 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               ⚙
             </button>
           )}
-          {/* 固定键内联在控制按钮右侧 */}
-          <div style={s.pinnedRowPC}>
-            {config.pinned.map(id => {
-              const key = KEY_MAP[id]
-              if (!key) return null
-              return (
-                <button
-                  key={id}
-                  style={{...s.keyPC, background: tc.keyBg, color: tc.keyColor, borderColor: tc.border}}
-                  onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
-                >
-                  {key.label}
-                </button>
-              )
-            })}
-          </div>
+          {/* 固定键：宽屏折叠时隐藏，仅展开时显示 */}
+          {(!isWidePC || !collapsed) && (
+            <div style={s.pinnedRowPC}>
+              {config.pinned.map(id => {
+                const key = KEY_MAP[id]
+                if (!key) return null
+                return (
+                  <button
+                    key={id}
+                    style={{...s.keyPC, background: tc.keyBg, color: tc.keyColor, borderColor: tc.border}}
+                    onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                  >
+                    {key.label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
-        {/* 展开区：仅在非折叠时显示第二行 */}
+        {/* 展开区：非折叠时显示第二行 */}
         {!collapsed && (
           <div style={s.expandedRowsPC}>
             {chunk(config.expanded, 16).map((row, i) => (
@@ -817,25 +828,24 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   copyBtnPC: {
-    background: '#0f3460',
-    border: '1px solid #334155',
+    background: 'transparent',
+    border: 'none',
     borderRadius: 4,
-    color: '#93c5fd',
+    color: 'var(--nexus-muted)',
     cursor: 'pointer',
-    fontSize: 12,
-    padding: '3px 8px',
-    fontWeight: 500,
+    fontSize: 13,
+    padding: '4px 8px',
     flexShrink: 0,
   },
   copyBtnActivePC: {
-    background: '#1e3a5f',
-    border: '1px solid #4ade80',
+    background: 'transparent',
+    border: 'none',
     borderRadius: 4,
     color: '#4ade80',
     cursor: 'pointer',
-    fontSize: 12,
-    padding: '3px 8px',
-    fontWeight: 500,
+    fontSize: 13,
+    padding: '4px 8px',
+    fontWeight: 600,
     flexShrink: 0,
   },
   pinnedRowPC: {

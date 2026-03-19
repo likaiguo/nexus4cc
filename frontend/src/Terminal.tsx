@@ -700,8 +700,8 @@ export default function Terminal({ token }: Props) {
             onOpenSettings={() => setShowSettings(true)}
           />
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            <Toolbar {...toolbarProps} />
             <div ref={containerRef} style={styles.terminal} />
+            <Toolbar {...toolbarProps} />
           </div>
         </div>
       ) : (
