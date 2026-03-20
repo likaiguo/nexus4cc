@@ -115,12 +115,14 @@ app.post('/api/sessions', authMiddleware, (req, res) => {
     shellCmd = 'zsh';
   } else {
     // claude mode: inject proxy env vars so claude can reach the API
-    const proxyEnv = Object.entries(proxyVars).map(([k, v]) => `${k}=${v}`).join(' ');
+    // 使用 export 让变量持久化到 shell 环境，后续 zsh 也能继承
+    const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ');
+    const proxyPrefix = proxyExports ? `${proxyExports}; ` : '';
     if (profile) {
       const runScript = join(__dirname, 'nexus-run-claude.sh');
-      shellCmd = `${proxyEnv} bash ${runScript} ${profile} ${cwd}`;
+      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`;
     } else {
-      shellCmd = `${proxyEnv} claude --dangerously-skip-permissions; exec zsh -i`;
+      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; exec zsh -i`;
     }
   }
 
