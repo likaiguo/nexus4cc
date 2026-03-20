@@ -77,3 +77,7 @@
 | 移动端水平滑动切换 tmux 窗口 | `5f33934` |
 | Telegram /switch 命令切换目标窗口 | `6387cdc` |
 | 修复：sanitize /switch target（防命令注入）| `cc9fb01` |
+| feat: 任务 running 状态实时可见（Web+Telegram）| `608e77b` |
+| feat: 任务删除按钮 + 服务启动清理孤儿任务 | `5f09814` |
+| feat: 任务输出复制按钮 + 一键重新执行 | `586df3c` |
+| style: running 状态改用 pulse 动画 | `5b59f4d` |

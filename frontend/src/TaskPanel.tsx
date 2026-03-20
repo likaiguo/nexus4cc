@@ -214,7 +214,7 @@ export default function TaskPanel({ token, windows, activeWindowName, tmuxSessio
                       background: task.status === 'success' ? '#22c55e' : task.status === 'running' ? '#f59e0b' : '#ef4444',
                       ...(task.status === 'running' ? { animation: 'pulse 1.5s ease-in-out infinite' } : {}),
                     }} />
-                    <span style={s.taskPrompt}>{task.prompt.slice(0, 60)}{task.prompt.length > 60 ? '...' : ''}</span>
+                    <span style={s.taskPrompt} title={task.prompt}>{task.prompt.slice(0, 60)}{task.prompt.length > 60 ? '...' : ''}</span>
                     {task.source === 'telegram' && <span style={s.sourceBadge}>TG</span>}
                     <span style={s.taskSession}>{task.session_name}</span>
                     <button style={s.deleteBtn} onClick={(e) => deleteTask(task.id, e)} title="删除">✕</button>
