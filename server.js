@@ -435,6 +435,7 @@ app.post('/api/tasks', authMiddleware, (req, res) => {
     tasks.push({
       id: taskId,
       session_name,
+      tmux_session: targetSession !== TMUX_SESSION ? targetSession : undefined,
       prompt: prompt.slice(0, 1000), // 截断保存
       status,
       output: output.slice(-10000), // 保存最后10K输出
@@ -552,7 +553,7 @@ app.post('/api/webhooks/telegram', (req, res) => {
 
   // /start 欢迎消息
   if (message.text?.trim() === '/start') {
-    telegramSend(chatId, '👋 *Nexus Bot* 已就绪\n\n发送任意文字，我会用 `claude -p` 在你的服务器上执行并回复结果。\n\n发送图片或文件，我会保存到当前 session 目录。\n\n`/sessions` — 查看当前 tmux 窗口列表')
+    telegramSend(chatId, '👋 *Nexus Bot* 已就绪\n\n发送任意文字，我会用 `claude -p` 在你的服务器上执行并回复结果。\n\n发送图片或文件，我会保存到当前 session 目录。\n\n`/sessions` — 查看 tmux 窗口列表\n`/switch <编号>` — 切换目标窗口')
     return
   }
 
@@ -567,7 +568,20 @@ app.post('/api/webhooks/telegram', (req, res) => {
         const [idx, name, active] = line.split('|')
         return `${active?.trim() === '1' ? '▶' : '  '} \`${idx}: ${name}\``
       })
-      telegramSend(chatId, '*当前 tmux 窗口:*\n' + lines.join('\n'))
+      telegramSend(chatId, '*当前 tmux 窗口:*\n' + lines.join('\n') + '\n\n用 `/switch <编号>` 切换')
+    })
+    return
+  }
+
+  // /switch <index|name> — 切换 active tmux 窗口
+  if (message.text?.trim().startsWith('/switch ')) {
+    const target = message.text.trim().slice('/switch '.length).trim()
+    exec(`tmux select-window -t ${TMUX_SESSION}:${target}`, (err) => {
+      if (err) {
+        telegramSend(chatId, `❌ 无法切换到窗口 \`${target}\`: ${err.message}`)
+      } else {
+        telegramSend(chatId, `✅ 已切换到窗口 \`${target}\`\n\n后续任务将在此窗口执行。`)
+      }
     })
     return
   }
