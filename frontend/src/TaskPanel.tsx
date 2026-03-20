@@ -37,6 +37,13 @@ export default function TaskPanel({ token, windows, activeWindowName, tmuxSessio
     return () => clearInterval(interval)
   }, [])
 
+  // 首次打开面板时申请通知权限（仅在未决定时）
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
+  }, [])
+
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight
