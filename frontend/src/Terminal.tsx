@@ -475,6 +475,9 @@ export default function Terminal({ token }: Props) {
   const uploadFileRef = useRef<(file: File) => Promise<void>>(null!)
   const [windowOutputs, setWindowOutputs] = useState<Record<number, { output: string; clients: number; idleMs: number; connected: boolean }>>({})
   const scrollPositionsRef = useRef<Record<number, number>>({})
+  const windowsRef = useRef<TmuxWindow[]>([])
+  windowsRef.current = windows
+  const attachWindowFnRef = useRef<(index: number) => void>(() => {})
   const [showGuide, setShowGuide] = useState(() => localStorage.getItem('nexus_guide_seen') !== 'true')
   const [isScrolledUp, setIsScrolledUp] = useState(false)
 
@@ -654,6 +657,8 @@ export default function Terminal({ token }: Props) {
       // ignore
     }
   }
+
+  attachWindowFnRef.current = (index: number) => { attachToWindow(index) }
 
   async function attachToWindow(index: number) {
     // 保存当前窗口的滚动位置
@@ -884,6 +889,7 @@ export default function Terminal({ token }: Props) {
       return 20
     }
 
+    let touchStartX = 0
     let touchStartY = 0
     let touchLastY = 0
     let touchScrollRemainder = 0
@@ -891,6 +897,7 @@ export default function Terminal({ token }: Props) {
     let isPinching = false
     let pinchStartDist = 0
     let pinchStartFontSize = fontSize
+    let swipeAxis: 'vertical' | 'horizontal' | null = null
 
     function getTouchDist(e: TouchEvent): number {
       const dx = e.touches[0].clientX - e.touches[1].clientX
@@ -906,9 +913,11 @@ export default function Terminal({ token }: Props) {
         pinchStartFontSize = parseInt(localStorage.getItem(FONT_SIZE_KEY) || '16', 10)
       } else {
         isPinching = false
+        touchStartX = e.touches[0].clientX
         touchStartY = e.touches[0].clientY
         touchLastY = e.touches[0].clientY
         touchScrollRemainder = 0
+        swipeAxis = null
         cachedLineHeight = getLineHeight()
       }
     }
@@ -929,6 +938,13 @@ export default function Terminal({ token }: Props) {
           }
         }
       } else if (!isPinching) {
+        // Determine primary swipe axis on first significant movement
+        if (!swipeAxis) {
+          const dx = Math.abs(e.touches[0].clientX - touchStartX)
+          const dy = Math.abs(e.touches[0].clientY - touchStartY)
+          if (dx > 8 || dy > 8) swipeAxis = dx > dy ? 'horizontal' : 'vertical'
+        }
+        if (swipeAxis !== 'vertical') return // horizontal swipe — don't scroll
         const y = e.touches[0].clientY
         const deltaY = touchLastY - y
         touchLastY = y
@@ -953,8 +969,22 @@ export default function Terminal({ token }: Props) {
         isPinching = false
         return
       }
+      const endX = e.changedTouches[0].clientX
       const endY = e.changedTouches[0].clientY
-      if (Math.abs(endY - touchStartY) < TAP_THRESHOLD) {
+      const dx = endX - touchStartX
+      const dy = endY - touchStartY
+      // Horizontal swipe (>60px, primarily horizontal) → switch window
+      if (swipeAxis === 'horizontal' && Math.abs(dx) > 60) {
+        const wins = [...windowsRef.current].sort((a, b) => a.index - b.index)
+        const pos = wins.findIndex(w => w.index === activeWindowIndexRef.current)
+        if (dx < 0 && pos < wins.length - 1) {
+          attachWindowFnRef.current(wins[pos + 1].index)
+        } else if (dx > 0 && pos > 0) {
+          attachWindowFnRef.current(wins[pos - 1].index)
+        }
+        return
+      }
+      if (Math.abs(dy) < TAP_THRESHOLD && Math.abs(dx) < TAP_THRESHOLD) {
         inputRef.current?.focus({ preventScroll: true })
       }
     }
