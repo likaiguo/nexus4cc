@@ -450,6 +450,7 @@ function Sidebar({
 export default function Terminal({ token }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const userScrolledRef = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -805,8 +806,8 @@ export default function Terminal({ token }: Props) {
     return () => document.removeEventListener('paste', handlePaste)
   }, [])
 
+  // Effect A: create xterm instance + DOM attachment + touch/resize events (once per token)
   useEffect(() => {
-    setIsScrolledUp(false)
     const fontSize = parseInt(localStorage.getItem(FONT_SIZE_KEY) || '16', 10)
     const initialTheme = getInitialTheme()
 
@@ -824,6 +825,7 @@ export default function Terminal({ token }: Props) {
     term.loadAddon(fitAddon)
     term.loadAddon(webLinksAddon)
     termRef.current = term
+    fitAddonRef.current = fitAddon
 
     const container = containerRef.current!
     term.open(container)
@@ -848,75 +850,6 @@ export default function Terminal({ token }: Props) {
       return true
     })
 
-    function getLineHeight(): number {
-      const core = (term as any)._core
-      const cellH = core?._renderService?.dimensions?.css?.cell?.height
-      if (cellH && cellH > 0) return cellH
-      const h = container.offsetHeight
-      if (h > 0 && term.rows > 0) return h / term.rows
-      return 20
-    }
-
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-
-    // 延迟显示 loading，避免快速连接时的闪烁
-    const loadingTimer = setTimeout(() => {
-      if (!hasConnectedRef.current) setIsConnecting(true)
-    }, 300)
-
-    // 标记是否为主动关闭（useEffect cleanup），避免触发重连
-    let intentionalClose = false
-
-    // 重连逻辑：不刷新页面，直接创建新 WebSocket
-    let reconnectAttempts = 0
-    const maxReconnectAttempts = 8
-    const reconnectDelay = () => Math.min(1000 * Math.pow(2, reconnectAttempts), 15000)
-
-    function createWs(isReconnect = false) {
-      const s = activeTmuxSessionRef.current
-      const wi = activeWindowIndexRef.current
-      const newWs = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}&window=${wi}&session=${encodeURIComponent(s)}`)
-      wsRef.current = newWs
-
-      newWs.onopen = () => {
-        if (isReconnect) {
-          term.write('\r\n\x1b[32m[Nexus: 已重新连接]\x1b[0m\r\n')
-        } else {
-          clearTimeout(loadingTimer)
-        }
-        reconnectAttempts = 0
-        hasConnectedRef.current = true
-        setIsConnecting(false)
-        fitAddon.fit()
-        newWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
-
-      newWs.onmessage = (e) => {
-        term.write(e.data)
-        if (!userScrolledRef.current) term.scrollToBottom()
-      }
-
-      newWs.onclose = (e) => {
-        if (intentionalClose) return
-        if (e.code === 4001) {
-          term.write('\r\n\x1b[31m[Nexus: 认证失败，请刷新重新登录]\x1b[0m\r\n')
-          return
-        }
-        if (reconnectAttempts >= maxReconnectAttempts) {
-          term.write('\r\n\x1b[31m[Nexus: 重连失败，请刷新页面]\x1b[0m\r\n')
-          return
-        }
-        reconnectAttempts++
-        const delay = reconnectDelay()
-        term.write(`\r\n\x1b[33m[Nexus: 连接断开，${delay / 1000}s 后重连 (${reconnectAttempts}/${maxReconnectAttempts})...]\x1b[0m\r\n`)
-        setTimeout(() => createWs(true), delay)
-      }
-
-      newWs.onerror = () => term.write('\r\n\x1b[31m[Nexus: WebSocket 错误]\x1b[0m\r\n')
-    }
-
-    createWs()
-
     // 键盘输入 → 发送到当前 WebSocket
     term.onData((data) => wsRef.current?.send(data))
 
@@ -929,6 +862,15 @@ export default function Terminal({ token }: Props) {
         setIsScrolledUp(scrolledUp)
       }
     })
+
+    function getLineHeight(): number {
+      const core = (term as any)._core
+      const cellH = core?._renderService?.dimensions?.css?.cell?.height
+      if (cellH && cellH > 0) return cellH
+      const h = container.offsetHeight
+      if (h > 0 && term.rows > 0) return h / term.rows
+      return 20
+    }
 
     let touchStartY = 0
     let touchLastY = 0
@@ -945,7 +887,6 @@ export default function Terminal({ token }: Props) {
     }
 
     function onTouchStart(e: TouchEvent) {
-      // 复制模式下允许默认行为（文本选择）
       if (selectionModeRef.current) return
       if (e.touches.length === 2) {
         isPinching = true
@@ -961,7 +902,6 @@ export default function Terminal({ token }: Props) {
     }
 
     function onTouchMove(e: TouchEvent) {
-      // 复制模式下不处理滚动，允许文本选择
       if (selectionModeRef.current) return
       e.preventDefault()
       if (isPinching && e.touches.length === 2) {
@@ -996,7 +936,6 @@ export default function Terminal({ token }: Props) {
     }
 
     function onTouchEnd(e: TouchEvent) {
-      // 复制模式下不处理点击
       if (selectionModeRef.current) return
       if (isPinching) {
         isPinching = false
@@ -1013,7 +952,7 @@ export default function Terminal({ token }: Props) {
     container.addEventListener('touchend', onTouchEnd, { passive: true })
 
     function sendResize() {
-      fitAddon.fit()
+      fitAddonRef.current?.fit()
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
       }
@@ -1028,15 +967,93 @@ export default function Terminal({ token }: Props) {
     window.addEventListener('orientationchange', onOrientationChange)
 
     return () => {
-      intentionalClose = true
-      clearTimeout(loadingTimer)
       resizeObserver.disconnect()
       window.removeEventListener('orientationchange', onOrientationChange)
       container.removeEventListener('touchstart', onTouchStart)
       container.removeEventListener('touchmove', onTouchMove)
       container.removeEventListener('touchend', onTouchEnd)
-      wsRef.current?.close()
       term.dispose()
+      termRef.current = null
+      fitAddonRef.current = null
+    }
+  }, [token])
+
+  // Effect B: WebSocket connection (reconnects on window switch, xterm persists)
+  useEffect(() => {
+    setIsScrolledUp(false)
+    userScrolledRef.current = false
+
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+
+    // 延迟显示 loading，避免快速连接时的闪烁
+    const loadingTimer = setTimeout(() => {
+      if (!hasConnectedRef.current) setIsConnecting(true)
+    }, 300)
+
+    // 标记是否为主动关闭（useEffect cleanup），避免触发重连
+    let intentionalClose = false
+
+    // 重连逻辑：不刷新页面，直接创建新 WebSocket
+    let reconnectAttempts = 0
+    const maxReconnectAttempts = 8
+    const reconnectDelay = () => Math.min(1000 * Math.pow(2, reconnectAttempts), 15000)
+
+    function writeTerm(data: string) {
+      termRef.current?.write(data)
+    }
+
+    function createWs(isReconnect = false) {
+      const s = activeTmuxSessionRef.current
+      const wi = activeWindowIndexRef.current
+      const newWs = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}&window=${wi}&session=${encodeURIComponent(s)}`)
+      wsRef.current = newWs
+
+      newWs.onopen = () => {
+        if (isReconnect) {
+          writeTerm('\r\n\x1b[32m[Nexus: 已重新连接]\x1b[0m\r\n')
+        } else {
+          clearTimeout(loadingTimer)
+          // Clear terminal buffer for the new window
+          termRef.current?.clear()
+        }
+        reconnectAttempts = 0
+        hasConnectedRef.current = true
+        setIsConnecting(false)
+        fitAddonRef.current?.fit()
+        const term = termRef.current
+        if (term) newWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      }
+
+      newWs.onmessage = (e) => {
+        writeTerm(e.data)
+        if (!userScrolledRef.current) termRef.current?.scrollToBottom()
+      }
+
+      newWs.onclose = (e) => {
+        if (intentionalClose) return
+        if (e.code === 4001) {
+          writeTerm('\r\n\x1b[31m[Nexus: 认证失败，请刷新重新登录]\x1b[0m\r\n')
+          return
+        }
+        if (reconnectAttempts >= maxReconnectAttempts) {
+          writeTerm('\r\n\x1b[31m[Nexus: 重连失败，请刷新页面]\x1b[0m\r\n')
+          return
+        }
+        reconnectAttempts++
+        const delay = reconnectDelay()
+        writeTerm(`\r\n\x1b[33m[Nexus: 连接断开，${delay / 1000}s 后重连 (${reconnectAttempts}/${maxReconnectAttempts})...]\x1b[0m\r\n`)
+        setTimeout(() => createWs(true), delay)
+      }
+
+      newWs.onerror = () => writeTerm('\r\n\x1b[31m[Nexus: WebSocket 错误]\x1b[0m\r\n')
+    }
+
+    createWs()
+
+    return () => {
+      intentionalClose = true
+      clearTimeout(loadingTimer)
+      wsRef.current?.close()
     }
   }, [token, activeWindowIndex])
 
