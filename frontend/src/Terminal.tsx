@@ -922,7 +922,7 @@ export default function Terminal({ token }: Props) {
     let touchStartX = 0
     let touchStartY = 0
     let touchLastY = 0
-    let xtermViewport: HTMLElement | null = null
+    let touchScrollRemainder = 0
     let isPinching = false
     let pinchStartDist = 0
     let pinchStartFontSize = fontSize
@@ -945,8 +945,8 @@ export default function Terminal({ token }: Props) {
         touchStartX = e.touches[0].clientX
         touchStartY = e.touches[0].clientY
         touchLastY = e.touches[0].clientY
+        touchScrollRemainder = 0
         swipeAxis = null
-        xtermViewport = container.querySelector('.xterm-viewport')
       }
     }
 
@@ -974,14 +974,25 @@ export default function Terminal({ token }: Props) {
         }
         if (swipeAxis === 'horizontal') return // clearly horizontal — don't scroll
         const y = e.touches[0].clientY
-        const deltaY = touchLastY - y  // positive = finger moved up = scroll toward older content
+        const deltaY = touchLastY - y  // negative = finger DOWN, positive = finger UP
         touchLastY = y
-        if (xtermViewport && deltaY !== 0) {
-          // Finger down (deltaY < 0) → scrollTop decreases → older content visible
-          // Finger up  (deltaY > 0) → scrollTop increases → newer content visible
-          // ×1.5 for a more natural, responsive scroll feel
-          xtermViewport.scrollTop += deltaY * 1.5
-          // userScrolledRef is updated via term.onScroll listener
+        touchScrollRemainder += deltaY * 2  // ×2 speed multiplier
+        // Use container height / rows as line height; fallback to 20px
+        const lineH = container.offsetHeight > 0 && term.rows > 0
+          ? container.offsetHeight / term.rows : 20
+        const lines = Math.trunc(touchScrollRemainder / lineH)
+        if (lines !== 0) {
+          touchScrollRemainder -= lines * lineH
+          // lines < 0 (finger down) → scrollLines(neg) = scroll UP = older content ✓
+          // lines > 0 (finger up)   → scrollLines(pos) = scroll DOWN = newer content ✓
+          term.scrollLines(lines)
+          const buf = (term as any).buffer?.active
+          if (buf) {
+            userScrolledRef.current = buf.viewportY < buf.baseY
+            window.dispatchEvent(new CustomEvent('nexus:atbottom', {
+              detail: buf.viewportY >= buf.baseY
+            }))
+          }
         }
       }
     }
