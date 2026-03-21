@@ -1178,13 +1178,19 @@ export default function Terminal({ token }: Props) {
     runningTaskCount,
     onToggleKeyboard: () => {
       if (keyboardVisibleRef.current) {
-        inputRef.current?.blur()
         keyboardVisibleRef.current = false
         setKeyboardVisible(false)
+        if (inputRef.current) {
+          inputRef.current.inputMode = 'none'
+          inputRef.current.blur()
+        }
       } else {
         keyboardVisibleRef.current = true
         setKeyboardVisible(true)
-        inputRef.current?.focus()
+        if (inputRef.current) {
+          inputRef.current.inputMode = 'text'
+          inputRef.current.focus()
+        }
       }
     },
     keyboardActive: keyboardVisible,
@@ -1237,6 +1243,7 @@ export default function Terminal({ token }: Props) {
       <input
         ref={inputRef}
         style={styles.hiddenInput}
+        inputMode={!isWidePC && !keyboardVisible ? 'none' : undefined}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
