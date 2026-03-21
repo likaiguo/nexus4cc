@@ -17,6 +17,8 @@ interface Props {
   onOpenTasks?: () => void
   onUpload?: () => void
   runningTaskCount?: number
+  onToggleKeyboard?: () => void
+  keyboardActive?: boolean
 }
 
 const KEY_MAP = Object.fromEntries(ALL_KEYS.map(k => [k.id, k]))
@@ -59,7 +61,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, selectionMode, onToggleSelectionMode, onOpenSettings, onOpenSessions, onOpenTasks, onUpload, runningTaskCount }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, selectionMode, onToggleSelectionMode, onOpenSettings, onOpenTasks, onUpload, runningTaskCount, onToggleKeyboard, keyboardActive }: Props) {
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [collapsed, setCollapsed]     = useState(() => {
     const saved = localStorage.getItem(COLLAPSED_KEY)
@@ -449,6 +451,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         >
           {selectionMode ? '✓' : '⎘'}
         </button>
+        <button
+          style={keyboardActive ? s.copyBtnActive : s.iconBtn}
+          onPointerDown={(e) => { e.preventDefault(); onToggleKeyboard?.() }}
+          title={keyboardActive ? '隐藏键盘' : '显示键盘'}
+        >⌨</button>
         {/* ⚙ quick menu */}
         <div style={{ position: 'relative' }}>
           <button style={{...s.iconBtn, color: tc.iconColor}} onPointerDown={(e) => { e.preventDefault(); setShowQuickMenu(v => !v) }} title="更多">⚙</button>
@@ -479,10 +486,6 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             </>
           )}
         </div>
-        {/* ≡ session drawer */}
-        {onOpenSessions && (
-          <button style={{...s.iconBtn, color: tc.iconColor, fontSize: 22, lineHeight: 1}} onPointerDown={(e) => { e.preventDefault(); onOpenSessions() }} title="会话管理">≡</button>
-        )}
       </div>
 
       {renderKeys(config.pinned)}

@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import Toolbar from './Toolbar'
+import SessionFAB from './SessionFAB'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
 
 const SessionManager = lazy(() => import('./SessionManager'))
@@ -466,6 +467,7 @@ export default function Terminal({ token }: Props) {
   const attachWindowFnRef = useRef<(index: number) => void>(() => {})
   const [showGuide, setShowGuide] = useState(() => localStorage.getItem('nexus_guide_seen') !== 'true')
   const [isScrolledUp, setIsScrolledUp] = useState(false)
+  const [keyboardVisible, setKeyboardVisible] = useState(false)
 
   // F-18: 多 tmux session 支持
   const [tmuxSessions, setTmuxSessions] = useState<string[]>([])
@@ -1140,6 +1142,22 @@ export default function Terminal({ token }: Props) {
     else if (e.key === 'Backspace') { e.preventDefault(); sendToWs('\x7f') }
   }
 
+  // visualViewport: re-fit xterm when mobile keyboard appears/disappears
+  useEffect(() => {
+    if (isWidePC) return
+    const vv = window.visualViewport
+    if (!vv) return
+    const handleResize = () => {
+      const termEl = containerRef.current
+      if (termEl) {
+        termEl.scrollTop = termEl.scrollHeight
+      }
+      setTimeout(() => fitAddonRef.current?.fit(), 100)
+    }
+    vv.addEventListener('resize', handleResize)
+    return () => vv.removeEventListener('resize', handleResize)
+  }, [isWidePC])
+
   const toolbarProps = {
     token,
     sendToWs,
@@ -1150,10 +1168,19 @@ export default function Terminal({ token }: Props) {
     selectionMode,
     onToggleSelectionMode: () => setSelectionMode(v => !v),
     onOpenSettings: () => setShowSettings(true),
-    onOpenSessions: () => setShowSessionDrawer(true),
     onOpenTasks: () => setShowTasks(true),
     onUpload: handleFileUpload,
     runningTaskCount,
+    onToggleKeyboard: () => {
+      if (keyboardVisible) {
+        inputRef.current?.blur()
+        setKeyboardVisible(false)
+      } else {
+        inputRef.current?.focus()
+        setKeyboardVisible(true)
+      }
+    },
+    keyboardActive: keyboardVisible,
   }
 
   return (
@@ -1258,7 +1285,7 @@ export default function Terminal({ token }: Props) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-            <div ref={containerRef} style={styles.terminal} onClick={() => inputRef.current?.focus()} />
+            <div ref={containerRef} style={styles.terminal} />
             {isConnecting && (
               <div style={styles.loadingOverlay}>
                 <div style={styles.spinner} />
@@ -1269,6 +1296,7 @@ export default function Terminal({ token }: Props) {
               <button style={styles.scrollBtn} onClick={scrollToBottom} title="滚到底部">↓</button>
             )}
           </div>
+          <SessionFAB onClick={() => setShowSessionDrawer(true)} windowCount={windows.length} />
           <Toolbar {...toolbarProps} />
         </div>
       )}
@@ -1290,7 +1318,7 @@ export default function Terminal({ token }: Props) {
                   <div
                     key={win.index}
                     style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', cursor: 'pointer', background: isActive ? 'var(--nexus-tab-active)' : 'transparent', borderBottom: '1px solid var(--nexus-border)' }}
-                    onPointerDown={() => { attachToWindow(win.index); setShowSessionDrawer(false) }}
+                    onClick={() => { attachToWindow(win.index); setShowSessionDrawer(false) }}
                   >
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: STATUS_DOT_COLOR[status], flexShrink: 0, display: 'inline-block' }} title={STATUS_DOT_TITLE[status]} />
                     <span style={{ flex: 1, color: 'var(--nexus-text)', fontSize: 14, fontFamily: 'Menlo, Monaco, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{win.name}</span>
@@ -1306,7 +1334,7 @@ export default function Terminal({ token }: Props) {
                 <div
                   key={sess}
                   style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', cursor: 'pointer', background: sess === activeTmuxSession ? 'var(--nexus-tab-active)' : 'transparent' }}
-                  onPointerDown={() => { handleSwitchSession(sess); setShowSessionDrawer(false) }}
+                  onClick={() => { handleSwitchSession(sess); setShowSessionDrawer(false) }}
                 >
                   <span style={{ color: sess === activeTmuxSession ? '#3b82f6' : 'var(--nexus-text2)', fontSize: 13 }}>{sess === activeTmuxSession ? '✓ ' : '  '}{sess}</span>
                 </div>
@@ -1315,7 +1343,7 @@ export default function Terminal({ token }: Props) {
             <div style={{ padding: '12px 16px', borderTop: '1px solid var(--nexus-border)', flexShrink: 0 }}>
               <button
                 style={{ width: '100%', background: '#3b82f6', border: 'none', borderRadius: 8, color: '#fff', fontSize: 14, fontWeight: 600, padding: '12px 0', cursor: 'pointer', touchAction: 'manipulation' }}
-                onPointerDown={() => { setShowSessionDrawer(false); openNewSessionDialog() }}
+                onClick={() => { setShowSessionDrawer(false); openNewSessionDialog() }}
               >
                 + 新建会话
               </button>
