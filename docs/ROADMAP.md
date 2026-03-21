@@ -12,7 +12,9 @@
 
 ## Backlog（待开发）
 
-> 所有计划功能已完成，无待开发项目。如有新需求请对照 NORTH-STAR 三轴添加。
+| Feature | 说明 |
+|---|---|
+| 历史记录 ANSI 颜色渲染 | server 加 `-e` flag 保留转义码；client 用 `ansi-to-html` 转 HTML，配色读 `term.options.theme` 色板 |
 
 ---
 
