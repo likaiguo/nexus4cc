@@ -32,11 +32,11 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedPath, setSelectedPath] = useState('~')
-  const [inputPath, setInputPath] = useState('~')
+  const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '~')
+  const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '~')
   const [shellType, setShellType] = useState<'claude' | 'bash'>('claude')
   const [configs, setConfigs] = useState<Config[]>([])
-  const [selectedProfile, setSelectedProfile] = useState<string>('')
+  const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -67,6 +67,10 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
       if (r.ok) {
         const data = await r.json()
         setConfigs(data)
+        // 没有保存过的选择时，默认用第一个 profile
+        if (!localStorage.getItem('nexus_last_profile') && data.length > 0) {
+          setSelectedProfile(data[0].id)
+        }
       }
     } catch {
       // ignore
@@ -83,10 +87,17 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
     setSelectedPath(value)
   }
 
+  function handleProfileChange(id: string) {
+    setSelectedProfile(id)
+    if (id) localStorage.setItem('nexus_last_profile', id)
+  }
+
   function handleConfirm() {
     const path = inputPath.trim()
     if (!path) return
     const profile = shellType === 'claude' && selectedProfile ? selectedProfile : undefined
+    localStorage.setItem('nexus_last_path', path)
+    if (profile) localStorage.setItem('nexus_last_profile', profile)
     onConfirm(path, shellType, profile)
   }
 
@@ -165,7 +176,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
               <select
                 style={s.select}
                 value={selectedProfile}
-                onChange={(e) => setSelectedProfile(e.target.value)}
+                onChange={(e) => handleProfileChange(e.target.value)}
               >
                 <option value="">默认 (不使用 profile)</option>
                 {configs.map((cfg) => (
