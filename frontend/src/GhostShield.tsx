@@ -14,7 +14,7 @@ import { createPortal } from 'react-dom'
  * partial panel (like Toolbar editPanel which is only 55vh height).
  * Without portal, ghost clicks outside the panel area would leak through.
  */
-export default function GhostShield({ ms = 600 }: { ms?: number }) {
+export default function GhostShield({ ms = 350 }: { ms?: number }) {
   const [active, setActive] = useState(true)
   useEffect(() => {
     const t = setTimeout(() => setActive(false), ms)

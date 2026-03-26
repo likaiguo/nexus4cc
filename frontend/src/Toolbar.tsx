@@ -19,6 +19,7 @@ interface Props {
   onOpenTasks?: () => void
   onUpload?: () => void
   onUploadFile?: (file: File) => void
+  onOpenFiles?: () => void
   onFitTerminal?: () => void
   runningTaskCount?: number
   /** When true: renders as a compact sidebar section (no theme/settings, flex-wrap key grid) */
@@ -69,7 +70,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onOpenTasks, onUploadFile, onFitTerminal, runningTaskCount, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onOpenTasks, onUploadFile, onOpenFiles, onFitTerminal, runningTaskCount, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const isControlled = controlledCollapsed !== undefined
   const [collapsedInternal, setCollapsedInternal] = useState(() => {
@@ -551,6 +552,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               })}
             </div>
           )}
+          {onOpenFiles && (
+            <button style={s.iconBtnPC} onPointerDown={(e) => { e.preventDefault(); onOpenFiles() }} title="文件列表">
+              <Icon name="folder" size={18} />
+            </button>
+          )}
           {onOpenSettings && (
             <button style={{ ...s.iconBtnPC, marginLeft: 'auto' }} onPointerDown={(e) => { e.preventDefault(); onOpenSettings() }} title="设置">
               <Icon name="settings" size={18} />
@@ -623,6 +629,12 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                     <Icon name="clipboard" size={16} />
                     <span>任务面板</span>
                     {!!runningTaskCount && <span style={{ marginLeft: 'auto', background: 'var(--nexus-success)', color: '#fff', borderRadius: 8, padding: '1px 6px', fontSize: 11 }}>{runningTaskCount}</span>}
+                  </button>
+                )}
+                {onOpenFiles && (
+                  <button style={s.quickMenuItem} onPointerDown={(e) => { e.preventDefault(); onOpenFiles(); setShowQuickMenu(false) }}>
+                    <Icon name="folder" size={16} />
+                    <span>文件列表</span>
                   </button>
                 )}
                 <button style={s.quickMenuItem} onPointerDown={(e) => { e.preventDefault(); setShowPasteBox(true); setShowQuickMenu(false) }}>

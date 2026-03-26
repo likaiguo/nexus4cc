@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 import { exec, spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, normalize, isAbsolute } from 'path';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, statSync } from 'fs';
 import https from 'node:https';
 import multer from 'multer';
 
@@ -34,8 +34,10 @@ const DATA_DIR = join(__dirname, 'data');
 const TOOLBAR_CONFIG_FILE = join(DATA_DIR, 'toolbar-config.json');
 const CONFIGS_DIR = join(DATA_DIR, 'configs');
 const TASKS_FILE = join(DATA_DIR, 'tasks.json');
+const UPLOADS_DIR = join(DATA_DIR, 'uploads');
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
+if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const app = express();
 app.use(express.json());
@@ -344,6 +346,102 @@ app.post('/api/upload', authMiddleware, (req, res, next) => {
     const filePath = req.file.path
     res.json({ ok: true, path: filePath, filename: req.file.filename, size: req.file.size })
   })
+})
+
+// ---- F-21: 独立文件上传 API（上传到 data/uploads，不混入项目目录）----
+
+// 按日期生成上传目录
+function getUploadDir() {
+  const dateDir = new Date().toISOString().slice(0, 10)
+  const dir = join(UPLOADS_DIR, dateDir)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+const fileUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, getUploadDir()),
+    filename: (req, file, cb) => {
+      const id = Math.random().toString(36).slice(2, 8)
+      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')
+      cb(null, `${id}_${safe}`)
+    }
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB
+})
+
+// POST /api/files/upload — 上传文件到 data/uploads/日期/
+app.post('/api/files/upload', authMiddleware, (req, res, next) => {
+  fileUpload.single('file')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message })
+    if (!req.file) return res.status(400).json({ error: 'no file' })
+    const dateDir = new Date().toISOString().slice(0, 10)
+    const url = `/uploads/${dateDir}/${req.file.filename}`
+    res.json({
+      ok: true,
+      filename: req.file.filename,
+      url,
+      size: req.file.size,
+      originalName: req.file.originalname
+    })
+  })
+})
+
+// 静态服务：上传的文件直接访问（/uploads/日期/文件名）
+app.use('/uploads', express.static(UPLOADS_DIR))
+
+// GET /api/files — 列出上传的文件（按日期分组）
+app.get('/api/files', authMiddleware, (req, res) => {
+  try {
+    const result = []
+    const dateDirs = readdirSync(UPLOADS_DIR, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+      .sort((a, b) => b.localeCompare(a)) // 降序，最新的在前
+
+    for (const dateDir of dateDirs) {
+      const dirPath = join(UPLOADS_DIR, dateDir)
+      const files = readdirSync(dirPath, { withFileTypes: true })
+        .filter(e => e.isFile())
+        .map(e => {
+          const stat = statSync(join(dirPath, e.name))
+          return {
+            name: e.name,
+            url: `/uploads/${dateDir}/${e.name}`,
+            size: stat.size,
+            created: stat.mtimeMs,
+          }
+        })
+        .sort((a, b) => b.created - a.created)
+      if (files.length > 0) {
+        result.push({ date: dateDir, files })
+      }
+    }
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/files/:date/:filename — 删除上传的文件
+app.delete('/api/files/:date/:filename', authMiddleware, (req, res) => {
+  const dateDir = req.params.date.replace(/[^0-9-]/g, '')
+  const filename = req.params.filename.replace(/[^a-zA-Z0-9._-]/g, '_')
+  const filePath = join(UPLOADS_DIR, dateDir, filename)
+  // 安全检查：确保文件在 uploads 目录内
+  if (!filePath.startsWith(UPLOADS_DIR)) {
+    return res.status(400).json({ error: 'invalid path' })
+  }
+  try {
+    if (existsSync(filePath)) {
+      unlinkSync(filePath)
+      res.json({ ok: true })
+    } else {
+      res.status(404).json({ error: 'file not found' })
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 // POST /api/sessions/:id/rename — 重命名窗口

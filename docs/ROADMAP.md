@@ -22,6 +22,7 @@
 
 | Feature | Commit |
 |---|---|
+| **F-21 独立文件上传** | `dev` — 上传到 `data/uploads/日期/` 目录；API: `POST /api/files/upload`, `GET /api/files`, `DELETE /api/files/:date/:filename`；前端: 拖拽上传+粘贴图片+文件选择+文件列表面板；终端显示上传路径 |
 | WebSocket tmux 桥 + JWT 认证 | `48c13ca` |
 | xterm.js + 移动端滚动/缩放 | `48c13ca` |
 | 可配置工具栏（服务端持久化） | `3bf29f9` |

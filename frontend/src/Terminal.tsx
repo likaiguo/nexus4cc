@@ -13,6 +13,7 @@ const SessionManager = lazy(() => import('./SessionManager'))
 const SessionManagerV2 = lazy(() => import('./SessionManagerV2'))
 const WorkspaceSelector = lazy(() => import('./WorkspaceSelector'))
 const TaskPanel = lazy(() => import('./TaskPanel'))
+const FilePanel = lazy(() => import('./FilePanel'))
 
 interface TmuxWindow {
   index: number
@@ -466,6 +467,7 @@ export default function Terminal({ token }: Props) {
   const [isConnecting, setIsConnecting] = useState(false)
   const hasConnectedRef = useRef(false)
   const [showTasks, setShowTasks] = useState(false)
+  const [showFiles, setShowFiles] = useState(false)
   const [showScrollback, setShowScrollback] = useState(false)
   const [scrollbackContent, setScrollbackContent] = useState('')
   const [scrollbackLoading, setScrollbackLoading] = useState(false)
@@ -938,28 +940,29 @@ export default function Terminal({ token }: Props) {
   async function uploadFile(file: File) {
     const formData = new FormData()
     formData.append('file', file)
-    const activeWindow = windows.find(w => w.index === activeWindowIndex)
-    if (activeWindow) {
-      formData.append('session_name', activeWindow.name)
-    }
     try {
-      const res = await fetch('/api/upload', {
+      // F-21: 使用新的独立文件上传 API
+      const res = await fetch('/api/files/upload', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
-      // 在终端中输入文件路径
-      const path = data.path
-      if (path) {
-        // 输入文件路径到终端（带引号处理空格）
-        const needsQuotes = path.includes(' ')
-        const displayPath = needsQuotes ? `"${path}"` : path
-        sendToWs(displayPath)
+      // 在终端显示上传成功信息
+      const url = data.url
+      const filename = data.originalName || file.name
+      const term = termRef.current
+      if (term) {
+        term.writeln(`\r\n\x1b[32m[Nexus: 文件已上传]\x1b[0m ${filename}`)
+        term.writeln(`\x1b[36m路径: ${url}\x1b[0m`)
       }
     } catch (e: any) {
       console.error('Upload failed:', e)
+      const term = termRef.current
+      if (term) {
+        term.writeln(`\r\n\x1b[31m[Nexus: 上传失败]\x1b[0m ${e.message || 'unknown error'}`)
+      }
     }
   }
 
@@ -1169,6 +1172,36 @@ export default function Terminal({ token }: Props) {
     container.addEventListener('touchmove', onTouchMove, { passive: false })
     container.addEventListener('touchend', onTouchEnd, { passive: true })
 
+    // F-21: 拖拽上传文件
+    function onDragOver(e: DragEvent) {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+    function onDragEnter(e: DragEvent) {
+      e.preventDefault()
+      e.stopPropagation()
+      container.style.boxShadow = 'inset 0 0 0 3px var(--nexus-accent)'
+    }
+    function onDragLeave(e: DragEvent) {
+      e.preventDefault()
+      e.stopPropagation()
+      container.style.boxShadow = ''
+    }
+    function onDrop(e: DragEvent) {
+      e.preventDefault()
+      e.stopPropagation()
+      container.style.boxShadow = ''
+      const files = e.dataTransfer?.files
+      if (files && files.length > 0) {
+        uploadFileRef.current(files[0])
+      }
+    }
+    container.addEventListener('dragover', onDragOver)
+    container.addEventListener('dragenter', onDragEnter)
+    container.addEventListener('dragleave', onDragLeave)
+    container.addEventListener('drop', onDrop)
+
     // Layer 4: Prevent any touch on the hidden input itself from showing keyboard
     function onInputTouchStart(e: TouchEvent) {
       if (!keyboardVisibleRef.current) e.preventDefault()
@@ -1205,6 +1238,10 @@ export default function Terminal({ token }: Props) {
       container.removeEventListener('touchstart', onTouchStart)
       container.removeEventListener('touchmove', onTouchMove)
       container.removeEventListener('touchend', onTouchEnd)
+      container.removeEventListener('dragover', onDragOver)
+      container.removeEventListener('dragenter', onDragEnter)
+      container.removeEventListener('dragleave', onDragLeave)
+      container.removeEventListener('drop', onDrop)
       if (inp) inp.removeEventListener('touchstart', onInputTouchStart)
       term.dispose()
       termRef.current = null
@@ -1394,7 +1431,7 @@ export default function Terminal({ token }: Props) {
 
   // Overlay guard: when any overlay opens, set xterm textarea to readOnly
   // to prevent virtual keyboard from appearing when keyboard dismisses
-  const anyOverlayOpen = showSessionDrawer || showTasks || showSettings || showNewSession || showScrollback || showSessionManagerV2
+  const anyOverlayOpen = showSessionDrawer || showTasks || showSettings || showNewSession || showScrollback || showSessionManagerV2 || showFiles
   useEffect(() => {
     if (isWidePC) return
     const ta = termRef.current?.textarea
@@ -1464,6 +1501,7 @@ export default function Terminal({ token }: Props) {
     onToggleTheme: toggleTheme,
     onOpenSettings: () => setShowSessionManagerV2(v => !v),
     onOpenTasks: () => setShowTasks(true),
+    onOpenFiles: () => setShowFiles(true),
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
     runningTaskCount,
@@ -1664,6 +1702,14 @@ export default function Terminal({ token }: Props) {
             activeWindowName={windows.find(w => w.index === activeWindowIndex)?.name || ''}
             tmuxSession={activeTmuxSession}
             onClose={() => setShowTasks(false)}
+          />
+        </Suspense>
+      )}
+      {showFiles && (
+        <Suspense fallback={null}>
+          <FilePanel
+            token={token}
+            onClose={() => setShowFiles(false)}
           />
         </Suspense>
       )}
