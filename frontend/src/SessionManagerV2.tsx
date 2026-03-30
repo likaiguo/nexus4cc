@@ -272,7 +272,7 @@ export default function SessionManagerV2({
   const handleRenameChannel = async (channel: Channel) => {
     setLongPressMenu(null)
     setChannelMenu(null)
-    const newName = window.prompt('重命名 Channel:', channel.name)
+    const newName = window.prompt(`${t('common.rename')} Channel:`, channel.name)
     if (!newName || newName === channel.name) return
 
     try {
@@ -284,7 +284,7 @@ export default function SessionManagerV2({
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       fetchChannels(currentProject)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '重命名失败')
+      setError(e instanceof Error ? e.message : t('sessionMgr.renameFailed'))
     }
   }
 
@@ -301,14 +301,14 @@ export default function SessionManagerV2({
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       fetchChannels(currentProject)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '关闭失败')
+      setError(e instanceof Error ? e.message : t('sessionMgr.closeFailed'))
     }
   }
 
   // 处理重命名 project
   const handleRenameProject = async (project: Project) => {
     setProjectMenu(null)
-    const newName = window.prompt('重命名 Project:', project.name)
+    const newName = window.prompt(`${t('common.rename')} Project:`, project.name)
     if (!newName || newName === project.name) return
 
     try {
@@ -324,7 +324,7 @@ export default function SessionManagerV2({
         onSwitchProject(newName)
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '重命名失败')
+      setError(e instanceof Error ? e.message : t('sessionMgr.renameFailed'))
     }
   }
 
@@ -349,7 +349,7 @@ export default function SessionManagerV2({
         }
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '关闭失败')
+      setError(e instanceof Error ? e.message : t('sessionMgr.closeFailed'))
     }
   }
 
@@ -414,11 +414,11 @@ export default function SessionManagerV2({
             {/* Channel 列表 */}
             <div className="flex-1 overflow-y-auto px-2 py-1">
               {loadingChannels ? (
-                <div className="text-nexus-muted text-sm px-4 py-3">加载中...</div>
+                <div className="text-nexus-muted text-sm px-4 py-3">{t('common.loading')}</div>
               ) : channels.length === 0 ? (
                 <div className="flex flex-col items-center justify-center px-4 py-6 text-nexus-muted">
                   <div className="text-[32px] mb-2 opacity-50">#</div>
-                  <div className="text-sm">该 Project 没有 Channel</div>
+                  <div className="text-sm">{t('sessionMgr.noChannels')}</div>
                 </div>
               ) : (
                 channels.map(channel => {
@@ -543,7 +543,7 @@ export default function SessionManagerV2({
                     onPointerDown={() => handleRenameChannel((longPressMenu || channelMenu)!.channel)}
                   >
                     <Icon name="pencil" size={14} />
-                    <span>重命名</span>
+                    <span>{t('common.rename')}</span>
                   </button>
                   <div className="h-px bg-nexus-border my-1" />
                   <button
@@ -551,7 +551,7 @@ export default function SessionManagerV2({
                     onPointerDown={() => handleCloseChannel((longPressMenu || channelMenu)!.channel)}
                   >
                     <Icon name="x" size={14} />
-                    <span>关闭</span>
+                    <span>{t('common.close')}</span>
                   </button>
                 </div>
               </>
@@ -573,11 +573,11 @@ export default function SessionManagerV2({
             {/* Project 列表 */}
             <div className="flex-1 overflow-y-auto px-2 py-1">
               {loadingProjects ? (
-                <div className="text-nexus-muted text-sm px-4 py-3">加载中...</div>
+                <div className="text-nexus-muted text-sm px-4 py-3">{t('common.loading')}</div>
               ) : projects.length === 0 ? (
                 <div className="flex flex-col items-center justify-center px-4 py-6 text-nexus-muted">
                   <div className="text-[32px] mb-2 opacity-50">📁</div>
-                  <div className="text-sm">暂无 Projects</div>
+                  <div className="text-sm">{t('sessionMgr.noProjects')}</div>
                 </div>
               ) : (
                 projects.map(project => {
@@ -690,7 +690,7 @@ export default function SessionManagerV2({
                     onPointerDown={() => handleRenameProject(projectMenu.project)}
                   >
                     <Icon name="pencil" size={14} />
-                    <span>重命名</span>
+                    <span>{t('common.rename')}</span>
                   </button>
                   <div className="h-px bg-nexus-border my-1" />
                   <button
@@ -698,7 +698,7 @@ export default function SessionManagerV2({
                     onPointerDown={() => handleCloseProject(projectMenu.project)}
                   >
                     <Icon name="x" size={14} />
-                    <span>关闭 Project</span>
+                    <span>{t('sessionMgr.closeProject')}</span>
                   </button>
                 </div>
               </>
