@@ -1231,11 +1231,21 @@ export default function Terminal({ token }: Props) {
     return () => document.removeEventListener('focusin', handleFocusin)
   }, [isWidePC])
 
-  // Track sidebar collapsed state for PC
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem('nexus_sidebar_collapsed')
     return saved !== null ? saved === 'true' : true // default collapsed
   })
+  const [sidebarPinned, setSidebarPinned] = useState(() => {
+    const saved = localStorage.getItem('nexus_sidebar_pinned')
+    return saved !== null ? saved === 'true' : false
+  })
+
+  // When pinned, sidebar never collapses on background click
+  const handleSidebarCollapse = useCallback((collapsed: boolean) => {
+    if (sidebarPinned) return
+    setSidebarCollapsed(collapsed)
+    localStorage.setItem('nexus_sidebar_collapsed', String(collapsed))
+  }, [sidebarPinned])
   useEffect(() => {
     const el = toolbarWrapRef.current
     if (!el) return
@@ -1371,7 +1381,7 @@ export default function Terminal({ token }: Props) {
           <div className="flex flex-1 overflow-hidden min-h-0">
             {/* Collapsible Sidebar */}
             <div
-              className="flex-shrink-0 flex flex-col"
+              className="flex-shrink-0 flex flex-col bg-nexus-bg"
               style={{ width: sidebarCollapsed ? 48 : 220, overflow: 'hidden' }}
               onClick={() => {
                 setSidebarCollapsed(!sidebarCollapsed)
@@ -1489,8 +1499,7 @@ export default function Terminal({ token }: Props) {
                     className="flex-1 min-h-0 overflow-hidden"
                     onClick={(e) => {
                       if (e.target === e.currentTarget) {
-                        setSidebarCollapsed(true)
-                        localStorage.setItem('nexus_sidebar_collapsed', 'true')
+                        handleSidebarCollapse(true)
                       }
                     }}
                   >
@@ -1500,13 +1509,18 @@ export default function Terminal({ token }: Props) {
                       currentProject={activeTmuxSession}
                       currentChannelIndex={activeWindowIndex}
                       onClose={() => {}}
+                      isPinned={sidebarPinned}
+                      onTogglePin={() => {
+                        const next = !sidebarPinned
+                        setSidebarPinned(next)
+                        localStorage.setItem('nexus_sidebar_pinned', String(next))
+                      }}
                       onSwitchProject={(name) => handleSwitchSession(name)}
                       onSwitchChannel={(idx) => attachToWindow(idx)}
                       onNewProject={openNewSessionDialog}
                       onNewChannel={handleCreateWindow}
                       onBackgroundClick={() => {
-                        setSidebarCollapsed(true)
-                        localStorage.setItem('nexus_sidebar_collapsed', 'true')
+                        handleSidebarCollapse(true)
                       }}
                       layout="sidebar"
                     />

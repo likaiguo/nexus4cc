@@ -30,6 +30,9 @@ interface Props {
   /** Refresh callback — exposed for sidebar toggle integration */
   onRefresh?: () => void
   layout?: 'modal' | 'sidebar'
+  /** Whether the sidebar is pinned (show pin button to prevent auto-collapse) */
+  isPinned?: boolean
+  onTogglePin?: () => void
 }
 
 function useIsDesktop() {
@@ -69,6 +72,8 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   onNewChannel,
   onRefresh: _onRefresh,
   onBackgroundClick,
+  isPinned = false,
+  onTogglePin,
   layout = 'modal',
 }: Props, ref) {
   const { t } = useTranslation()
@@ -546,6 +551,15 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
           <div className="px-3 py-1.5 border-b border-nexus-border shrink-0">
             <div className="text-xs font-semibold text-nexus-text tracking-wide flex items-center justify-between gap-1.5">
               <div className="flex items-center gap-1.5">
+                {isPinned !== undefined && onTogglePin && (
+                  <button
+                    className={`bg-transparent border-none cursor-pointer p-1 flex items-center justify-center transition-opacity ${isPinned ? 'text-nexus-accent opacity-100' : 'text-nexus-text-2 opacity-70 hover:opacity-100'}`}
+                    onClick={onTogglePin}
+                    title={isPinned ? '取消固定' : '固定侧边栏'}
+                  >
+                    <Icon name="pin" size={14} />
+                  </button>
+                )}
                 <span className="text-sm">📁</span>
                 {t('sessionMgr.projects')}
               </div>
