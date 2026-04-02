@@ -2,7 +2,12 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
-import FileBrowser from './FileBrowser'
+
+interface BrowseResult {
+  path: string
+  parent: string | null
+  dirs: { name: string; path: string }[]
+}
 
 interface Config {
   id: string
@@ -35,10 +40,36 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
   const [configs, setConfigs] = useState<Config[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
 
+  // 文件浏览器状态
+  const [browsePath, setBrowsePath] = useState<string | null>(null)
+  const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
+  const [browseParent, setBrowseParent] = useState<string | null>(null)
+  const [browseLoading, setBrowseLoading] = useState(false)
+  const [browseError, setBrowseError] = useState<string | null>(null)
+
   const headers = { Authorization: `Bearer ${token}` }
+
+  async function browseDir(path: string | null) {
+    setBrowseLoading(true)
+    setBrowseError(null)
+    try {
+      const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : '/api/browse'
+      const r = await fetch(url, { headers })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data: BrowseResult = await r.json()
+      setBrowsePath(data.path)
+      setBrowseDirs(data.dirs)
+      setBrowseParent(data.parent)
+    } catch (e: unknown) {
+      setBrowseError(e instanceof Error ? e.message : '浏览失败')
+    } finally {
+      setBrowseLoading(false)
+    }
+  }
 
   useEffect(() => {
     fetchConfigs()
+    browseDir(null)
   }, [])
 
   async function fetchConfigs() {
@@ -56,7 +87,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
     }
   }
 
-  function handleDirSelect(path: string) {
+  function handleSelect(path: string) {
     setSelectedPath(path)
     setInputPath(path)
   }
@@ -84,6 +115,14 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
     if (e.key === 'Enter') {
       handleConfirm()
     }
+  }
+
+  // 截断路径显示：只显示最后几个片段
+  function formatBrowsePath(p: string | null): string {
+    if (!p) return '/'
+    const parts = p.split('/').filter(Boolean)
+    if (parts.length <= 3) return '/' + parts.join('/')
+    return '.../' + parts.slice(-2).join('/')
   }
 
   return (
@@ -169,30 +208,59 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
             </div>
           )}
 
-          {/* 目录浏览器 - 使用 FileBrowser 组件 */}
+          {/* 目录浏览器 */}
           <div className="px-4 py-3 border-b border-nexus-border">
-            <FileBrowser
-              token={token}
-              mode="dirs-only"
-              initialPath="/workspace"
-              onSelectDir={handleDirSelect}
-              showBreadcrumb={false}
-              showParentEntry={true}
-              className="max-h-[240px]"
-              headerActions={
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-nexus-text-2 tracking-wider uppercase">{t('workspace.browseDir')}</span>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-0">{t('workspace.browseDir')}</span>
+                <span className="text-[11px] text-nexus-accent font-mono max-w-[160px] overflow-hidden text-ellipsis whitespace-nowrap" title={browsePath || ''}>{formatBrowsePath(browsePath)}</span>
+              </div>
+              <div className="flex gap-1.5">
+                {browsePath && (
                   <button
-                    className="bg-transparent border border-nexus-border rounded text-nexus-text-2 cursor-pointer text-[11px] px-2 py-0.5"
-                    onClick={() => handleDirSelect(selectedPath)}
-                    disabled={!selectedPath}
+                    className="bg-transparent border border-nexus-border rounded text-nexus-text-2 cursor-pointer text-[11px] px-2 py-0.5 shrink-0"
+                    onPointerDown={() => handleSelect(browsePath)}
+                    title={t('workspace.selectThisDir')}
+                  >{t('workspace.selectThisDir')}</button>
+                )}
+                <button className="bg-transparent border border-nexus-border rounded text-nexus-text-2 cursor-pointer text-[11px] px-2 py-0.5 shrink-0" onPointerDown={() => browseDir('/')}>{t('workspace.rootDir')}</button>
+              </div>
+            </div>
+            {browseError && <div className="text-nexus-error text-xs mb-2">{browseError}</div>}
+            {browseLoading && <div className="text-nexus-muted text-sm py-2">{t('common.loading')}</div>}
+            {!browseLoading && (
+              <div className="flex flex-col gap-0.5">
+                {/* 向上一级 */}
+                {browseParent && (
+                  <div
+                    className="flex items-center gap-2.5 px-3 py-1.5 rounded-md cursor-pointer bg-transparent border-b border-nexus-border mb-1"
+                    onPointerDown={() => browseDir(browseParent)}
                   >
-                    {t('workspace.selectThisDir')}
-                  </button>
-                </div>
-              }
-            />
+                    <span className="text-sm shrink-0">↑</span>
+                    <span className="text-nexus-text-2 text-sm flex-1 overflow-hidden text-ellipsis whitespace-nowrap">..</span>
+                    <span className="text-[11px] text-nexus-muted font-mono">{browseParent.split('/').slice(-1)[0] || '/'}</span>
+                  </div>
+                )}
+                {/* 子目录列表 */}
+                {browseDirs.length === 0 && !browseLoading && (
+                  <div className="text-nexus-muted text-sm py-2">{t('workspace.noSubDirs')}</div>
+                )}
+                {browseDirs.map(dir => (
+                  <div
+                    key={dir.path}
+                    className={`flex items-center gap-2.5 px-3 py-1.5 rounded-md cursor-pointer bg-transparent ${selectedPath === dir.path ? 'bg-nexus-bg-2 border border-nexus-accent' : ''}`}
+                    onPointerDown={() => handleSelect(dir.path)}
+                    onDoubleClick={() => browseDir(dir.path)}
+                    title={t('workspace.dirClickHint')}
+                  >
+                    <span className="text-sm shrink-0">📁</span>
+                    <span className="text-nexus-text text-sm flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{dir.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
+
         </div>
 
         {/* 底部按钮 */}
