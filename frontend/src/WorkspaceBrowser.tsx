@@ -44,7 +44,6 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       })
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
-      if (data.path) setCurrentPath(data.path)
       setEntries(data.entries || [])
     } catch (e: any) {
       setError(e.message || 'Failed to load')
