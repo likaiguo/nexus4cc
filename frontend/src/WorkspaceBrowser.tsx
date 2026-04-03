@@ -100,10 +100,10 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const [isSaving, setIsSaving] = useState(false)
   const [isPreviewMode, setIsPreviewMode] = useState(false)
 
-  // 编辑器缩放状态（双指缩放）
-  const [editorScale, setEditorScale] = useState(1)
+  // 编辑器字体大小（双指缩放调整）
+  const [editorFontSize, setEditorFontSize] = useState(14) // 基础 14px
   const [pinchStartDist, setPinchStartDist] = useState(0)
-  const [pinchStartScale, setPinchStartScale] = useState(1)
+  const [pinchStartFontSize, setPinchStartFontSize] = useState(14)
 
   // 加载目录内容
   const loadEntries = useCallback(async (path: string) => {
@@ -304,17 +304,19 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     if (e.touches.length === 2) {
       const dist = getPinchDistance(e.touches)
       setPinchStartDist(dist)
-      setPinchStartScale(editorScale)
+      setPinchStartFontSize(editorFontSize)
     }
   }
 
-  // 触摸移动：处理双指缩放
+  // 触摸移动：处理双指缩放（调整字体大小）
   function handleEditorTouchMove(e: React.TouchEvent) {
     if (e.touches.length === 2 && pinchStartDist > 0) {
       e.preventDefault()
       const currentDist = getPinchDistance(e.touches)
-      const scale = Math.max(0.5, Math.min(3, pinchStartScale * (currentDist / pinchStartDist)))
-      setEditorScale(scale)
+      const ratio = currentDist / pinchStartDist
+      // 字体范围 8px - 32px，按 sqrt 曲线让手感更自然
+      const newSize = Math.max(8, Math.min(32, Math.round(pinchStartFontSize * Math.sqrt(ratio))))
+      setEditorFontSize(newSize)
     }
   }
 
@@ -323,9 +325,9 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     setPinchStartDist(0)
   }
 
-  // 重置缩放
-  function resetEditorScale() {
-    setEditorScale(1)
+  // 重置字体大小
+  function resetEditorFontSize() {
+    setEditorFontSize(14)
   }
 
   // 构建面包屑路径（使用绝对路径）
@@ -625,7 +627,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 </button>
               )}
               <button
-                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setEditorScale(1) }}
+                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setEditorFontSize(14) }}
                 className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
               >
                 <Icon name="x" size={20} />
@@ -641,17 +643,17 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           >
             {editingFile && isMarkdownFile(editingFile.name) && isPreviewMode ? (
               <div
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-y-auto origin-top-left transition-transform duration-75"
-                style={{ transform: `scale(${editorScale})` }}
+                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-y-auto"
+                style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
               >
-                <MarkdownPreview content={editorContent} />
+                <MarkdownPreview content={editorContent} fontSize={editorFontSize} />
               </div>
             ) : (
               <textarea
                 value={editorContent}
                 onChange={(e) => setEditorContent(e.target.value)}
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-3 text-nexus-text text-sm font-mono resize-none focus:outline-none focus:border-nexus-accent origin-top-left transition-transform duration-75"
-                style={{ transform: `scale(${editorScale})` }}
+                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-3 text-nexus-text font-mono resize-none focus:outline-none focus:border-nexus-accent"
+                style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
                 spellCheck={false}
               />
             )}
@@ -660,12 +662,12 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           <div className="px-4 py-2 border-t border-nexus-border flex items-center justify-between text-xs text-nexus-muted">
             <div className="flex items-center gap-3">
               <span>{editorContent.length} {t('workspace.chars')}</span>
-              {editorScale !== 1 && (
+              {editorFontSize !== 14 && (
                 <button
-                  onClick={resetEditorScale}
+                  onClick={resetEditorFontSize}
                   className="text-nexus-accent hover:underline"
                 >
-                  {Math.round(editorScale * 100)}%
+                  {editorFontSize}px
                 </button>
               )}
             </div>
@@ -702,7 +704,7 @@ marked.setOptions({
 })
 
 // Markdown preview component using marked + DOMPurify
-function MarkdownPreview({ content }: { content: string }) {
+function MarkdownPreview({ content, fontSize = 14 }: { content: string; fontSize?: number }) {
   const rawHtml = marked.parse(content, { async: false }) as string
   const cleanHtml = DOMPurify.sanitize(rawHtml, {
     ALLOWED_TAGS: [
@@ -717,12 +719,21 @@ function MarkdownPreview({ content }: { content: string }) {
 
   return (
     <div
-      className="markdown-body prose prose-invert prose-sm max-w-none text-nexus-text
+      className="markdown-body max-w-none text-nexus-text
         [&_table]:w-full [&_table]:border-collapse [&_table]:my-3
         [&_th]:border [&_th]:border-nexus-border [&_th]:bg-nexus-bg-2 [&_th]:p-2 [&_th]:text-left [&_th]:text-nexus-text
         [&_td]:border [&_td]:border-nexus-border [&_td]:p-2 [&_td]:text-nexus-text
         [&_tr:nth-child(even)]:bg-nexus-bg-2/50
         [&_input[type='checkbox']]:mr-2 [&_input[type='checkbox']]:accent-nexus-accent"
+      style={{
+        fontSize: `${fontSize}px`,
+        lineHeight: '1.6',
+        // 标题相对正文的缩放比例
+        '--h1-size': `${Math.round(fontSize * 2)}px`,
+        '--h2-size': `${Math.round(fontSize * 1.5)}px`,
+        '--h3-size': `${Math.round(fontSize * 1.25)}px`,
+        '--code-size': `${Math.round(fontSize * 0.85)}px`,
+      } as React.CSSProperties}
       dangerouslySetInnerHTML={{ __html: cleanHtml }}
     />
   )
