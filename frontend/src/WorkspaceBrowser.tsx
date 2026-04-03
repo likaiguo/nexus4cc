@@ -100,6 +100,11 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const [isSaving, setIsSaving] = useState(false)
   const [isPreviewMode, setIsPreviewMode] = useState(false)
 
+  // 编辑器缩放状态（双指缩放）
+  const [editorScale, setEditorScale] = useState(1)
+  const [pinchStartDist, setPinchStartDist] = useState(0)
+  const [pinchStartScale, setPinchStartScale] = useState(1)
+
   // 加载目录内容
   const loadEntries = useCallback(async (path: string) => {
     setLoading(true)
@@ -284,6 +289,43 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   function isMarkdownFile(name: string): boolean {
     const ext = name.split('.').pop()?.toLowerCase() || ''
     return ext === 'md' || ext === 'markdown'
+  }
+
+  // 双指缩放：计算两点间距离
+  function getPinchDistance(touches: React.TouchList | globalThis.TouchList): number {
+    if (touches.length !== 2) return 0
+    const dx = touches[0].clientX - touches[1].clientX
+    const dy = touches[0].clientY - touches[1].clientY
+    return Math.sqrt(dx * dx + dy * dy)
+  }
+
+  // 触摸开始：初始化双指缩放
+  function handleEditorTouchStart(e: React.TouchEvent) {
+    if (e.touches.length === 2) {
+      const dist = getPinchDistance(e.touches)
+      setPinchStartDist(dist)
+      setPinchStartScale(editorScale)
+    }
+  }
+
+  // 触摸移动：处理双指缩放
+  function handleEditorTouchMove(e: React.TouchEvent) {
+    if (e.touches.length === 2 && pinchStartDist > 0) {
+      e.preventDefault()
+      const currentDist = getPinchDistance(e.touches)
+      const scale = Math.max(0.5, Math.min(3, pinchStartScale * (currentDist / pinchStartDist)))
+      setEditorScale(scale)
+    }
+  }
+
+  // 触摸结束：清理状态
+  function handleEditorTouchEnd() {
+    setPinchStartDist(0)
+  }
+
+  // 重置缩放
+  function resetEditorScale() {
+    setEditorScale(1)
   }
 
   // 构建面包屑路径（使用绝对路径）
@@ -583,7 +625,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 </button>
               )}
               <button
-                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false) }}
+                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setEditorScale(1) }}
                 className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
               >
                 <Icon name="x" size={20} />
@@ -591,23 +633,42 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             </div>
           </div>
           {/* Editor Content */}
-          <div className="flex-1 p-4 overflow-hidden">
+          <div
+            className="flex-1 p-4 overflow-hidden touch-none"
+            onTouchStart={handleEditorTouchStart}
+            onTouchMove={handleEditorTouchMove}
+            onTouchEnd={handleEditorTouchEnd}
+          >
             {editingFile && isMarkdownFile(editingFile.name) && isPreviewMode ? (
-              <div className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-y-auto">
+              <div
+                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-y-auto origin-top-left transition-transform duration-75"
+                style={{ transform: `scale(${editorScale})` }}
+              >
                 <MarkdownPreview content={editorContent} />
               </div>
             ) : (
               <textarea
                 value={editorContent}
                 onChange={(e) => setEditorContent(e.target.value)}
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-3 text-nexus-text text-sm font-mono resize-none focus:outline-none focus:border-nexus-accent"
+                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-3 text-nexus-text text-sm font-mono resize-none focus:outline-none focus:border-nexus-accent origin-top-left transition-transform duration-75"
+                style={{ transform: `scale(${editorScale})` }}
                 spellCheck={false}
               />
             )}
           </div>
           {/* Editor Footer */}
           <div className="px-4 py-2 border-t border-nexus-border flex items-center justify-between text-xs text-nexus-muted">
-            <span>{editorContent.length} {t('workspace.chars')}</span>
+            <div className="flex items-center gap-3">
+              <span>{editorContent.length} {t('workspace.chars')}</span>
+              {editorScale !== 1 && (
+                <button
+                  onClick={resetEditorScale}
+                  className="text-nexus-accent hover:underline"
+                >
+                  {Math.round(editorScale * 100)}%
+                </button>
+              )}
+            </div>
             <span>{editingFile.path}</span>
           </div>
         </div>
