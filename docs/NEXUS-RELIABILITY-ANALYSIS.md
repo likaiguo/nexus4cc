@@ -22,7 +22,7 @@
 ### 2.1 启动链路（从系统到进程）
 
 ```
-systemd (pm2-librae.service)
+systemd (pm2-<user>.service)
   └── PM2 God Daemon
         └── nexus (node server.js, pid 72736)
               └── tmux server
@@ -31,7 +31,7 @@ systemd (pm2-librae.service)
 
 ### 2.2 Layer 1 — systemd
 
-- **文件**: `/etc/systemd/system/pm2-librae.service`
+- **文件**: `/etc/systemd/system/pm2-<user>.service`
 - **配置**:
   - `Type=forking`
   - `Restart=on-failure`
@@ -133,7 +133,7 @@ spawn('claude', claudeArgs, {
 systemd
   └── ttyd -p 55001 ...
         └── tmux new-session ...
-              └── zsh /home/librae/scripts/run-claude-host-anthropic.sh
+              └── zsh ~/scripts/run-claude-host-anthropic.sh
 ```
 
 **脚本** (`run-claude-host-anthropic.sh`):
@@ -235,12 +235,12 @@ claude CLI 在 `.claude-data` 目录下:
      ```
 
 3. **确保 systemd 真正托管 PM2**
-   - 验证 `pm2-librae.service` 状态为 `active (running)`
+   - 验证 `pm2-<user>.service` 状态为 `active (running)`
    - 运行 `pm2 save` 确保 `dump.pm2` 包含 nexus
    - 如有需要，重新执行:
      ```bash
-     sudo systemctl enable pm2-librae
-     sudo systemctl restart pm2-librae
+     sudo systemctl enable pm2-<user>
+     sudo systemctl restart pm2-<user>
      ```
 
 ### 5.2 修复 nexus 目录下 Anthropic profile 启动
@@ -280,9 +280,9 @@ cp ~/.claude/.credentials.json /mnt/c/Users/libra/work/nexus/.claude-data/
 | PM2 配置文件 | `/mnt/c/Users/libra/work/nexus/ecosystem.config.cjs` |
 | nexus profile 启动脚本 | `/mnt/c/Users/libra/work/nexus/nexus-run-claude.sh` |
 | nexus profile JSON 目录 | `/mnt/c/Users/libra/work/nexus/data/configs/` |
-| systemd PM2 服务 | `/etc/systemd/system/pm2-librae.service` |
+| systemd PM2 服务 | `/etc/systemd/system/pm2-<user>.service` |
 | ttyd 备用终端服务 | `/etc/systemd/system/claude-host-mnt-c-Users-libra-work-nexus.service` |
-| ttyd 启动脚本 | `/home/librae/scripts/run-claude-host-anthropic.sh` |
+| ttyd 启动脚本 | `~/scripts/run-claude-host-anthropic.sh` |
 | 全局 Claude 配置 | `~/.claude/` |
 | 全局 Anthropic 凭证 | `~/.claude/.credentials.json` |
 | nexus 本地 Claude 配置 | `/mnt/c/Users/libra/work/nexus/.claude-data/` |

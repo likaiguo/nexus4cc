@@ -206,7 +206,7 @@ nexus/
 | `JWT_SECRET` | ✓ | — | JWT 签名密钥（openssl rand -hex 32） |
 | `ACC_PASSWORD_HASH` | ✓ | — | bcrypt hash 的登录密码 |
 | `TMUX_SESSION` | | `main` | 要 attach 的 tmux session 名 |
-| `WORKSPACE_ROOT` | | `/home/librae` | 工作区根目录 |
+| `WORKSPACE_ROOT` | | `/workspace` | 工作区根目录 |
 | `PORT` | | `59000` | 监听端口 |
 | `TELEGRAM_BOT_TOKEN` | | — | Telegram Bot token（可选） |
 | `TELEGRAM_CHAT_ID` | | — | 允许的 Telegram chat ID（可选） |
