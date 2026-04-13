@@ -463,6 +463,16 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             }, 0)
           }}
         />
+        <button
+          className="w-full mt-2 py-2.5 rounded-lg bg-nexus-accent text-white text-sm font-medium cursor-pointer border-none"
+          onPointerDown={(e) => {
+            e.preventDefault()
+            const text = pasteBoxRef.current?.value ?? ''
+            if (text) { sendToWs(text); setShowPasteBox(false) }
+          }}
+        >
+          Send
+        </button>
         <label className="flex items-center justify-center gap-2 mt-2.5 p-2.5 rounded-lg cursor-pointer bg-nexus-bg-2 border border-nexus-border text-nexus-text-2 text-[13px]">
           <Icon name="paperclip" size={16} />{t('toolbar.selectFile')}
           <input ref={pasteFileRef} type="file" accept="*/*" className="hidden"
