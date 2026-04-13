@@ -670,7 +670,8 @@ export default function Terminal({ token }: Props) {
     formData.append('file', file)
     formData.append('originalName', file.name)
     try {
-      const url = overwrite ? '/api/files/upload?overwrite=1' : '/api/files/upload'
+      const sessionParam = `session=${encodeURIComponent(activeTmuxSessionRef.current)}`
+      const url = overwrite ? `/api/files/upload?overwrite=1&${sessionParam}` : `/api/files/upload?${sessionParam}`
       const res = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
@@ -1753,6 +1754,7 @@ export default function Terminal({ token }: Props) {
         <Suspense fallback={null}>
           <FilePanel
             token={token}
+            session={activeTmuxSession}
             onClose={() => setShowFiles(false)}
           />
         </Suspense>

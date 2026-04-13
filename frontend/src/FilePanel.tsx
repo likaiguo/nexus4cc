@@ -19,6 +19,7 @@ interface FileGroup {
 
 interface Props {
   token: string
+  session: string
   onClose: () => void
 }
 
@@ -39,7 +40,7 @@ function useFormatDate() {
   }
 }
 
-export default function FilePanel({ token, onClose }: Props) {
+export default function FilePanel({ token, session, onClose }: Props) {
   const { t } = useTranslation()
   const formatDate = useFormatDate()
   const [groups, setGroups] = useState<FileGroup[]>([])
@@ -71,7 +72,7 @@ export default function FilePanel({ token, onClose }: Props) {
 
   const fetchFiles = useCallback(async () => {
     try {
-      const r = await fetch('/api/files', {
+      const r = await fetch(`/api/files?session=${encodeURIComponent(session)}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       if (r.ok) {
@@ -149,7 +150,7 @@ export default function FilePanel({ token, onClose }: Props) {
   async function deleteAllFiles() {
     if (!confirm(t('files.deleteAllConfirm', { count: totalFiles }))) return
     try {
-      const r = await fetch('/api/files/all', {
+      const r = await fetch(`/api/files/all?session=${encodeURIComponent(session)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       })

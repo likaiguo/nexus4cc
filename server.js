@@ -677,11 +677,11 @@ app.post('/api/upload', authMiddleware, (req, res, next) => {
 
 // ---- F-21: 文件上传 API（上传到当前 workspace 的 data/uploads/）----
 
-// 读取当前活跃 workspace 的 uploads 目录（基于 tmux NEXUS_CWD 环境变量）
-function getWorkspaceUploadsDir() {
+// 读取指定 session 的 uploads 目录（基于 tmux NEXUS_CWD 环境变量）
+function getWorkspaceUploadsDir(session = TMUX_SESSION) {
   let cwd = WORKSPACE_ROOT
   try {
-    const out = execSync(`tmux show-environment -t ${TMUX_SESSION} NEXUS_CWD 2>/dev/null`).toString().trim()
+    const out = execSync(`tmux show-environment -t ${session} NEXUS_CWD 2>/dev/null`).toString().trim()
     const m = out.match(/^NEXUS_CWD=(.+)$/)
     if (m) cwd = m[1]
   } catch {}
@@ -701,7 +701,7 @@ app.post('/api/files/upload', authMiddleware, (req, res, next) => {
     if (!req.file) return res.status(400).json({ error: 'no file' })
 
     const dateDir = new Date().toISOString().slice(0, 10)
-    const uploadsDir = getWorkspaceUploadsDir()
+    const uploadsDir = getWorkspaceUploadsDir(req.query.session || TMUX_SESSION)
     const uploadDir = join(uploadsDir, dateDir)
     if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true })
 
@@ -754,7 +754,7 @@ app.get('/api/files/content', authMiddleware, (req, res) => {
 // GET /api/files — 列出当前 workspace 上传的文件（按日期分组）
 app.get('/api/files', authMiddleware, (req, res) => {
   try {
-    const uploadsDir = getWorkspaceUploadsDir()
+    const uploadsDir = getWorkspaceUploadsDir(req.query.session || TMUX_SESSION)
     const result = []
     if (!existsSync(uploadsDir)) return res.json(result)
 
@@ -792,7 +792,7 @@ app.get('/api/files', authMiddleware, (req, res) => {
 // DELETE /api/files/all — 删除当前 workspace 所有上传的文件
 app.delete('/api/files/all', authMiddleware, (req, res) => {
   try {
-    const uploadsDir = getWorkspaceUploadsDir()
+    const uploadsDir = getWorkspaceUploadsDir(req.query.session || TMUX_SESSION)
     if (!existsSync(uploadsDir)) return res.json({ ok: true, deletedCount: 0 })
     const dateDirs = readdirSync(uploadsDir, { withFileTypes: true })
       .filter(e => e.isDirectory())
