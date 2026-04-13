@@ -795,10 +795,18 @@ export default function Terminal({ token }: Props) {
       // IME 组合输入期间不拦截
       if (e.isComposing) return
 
-      // 仅在PC宽屏模式且没有打开弹层时处理
+      // 仅在PC宽屏模式处理
       if (window.innerWidth < 768) return
-      const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles
-      if (anyOverlayOpen) return
+
+      // 焦点在终端容器外的 input/textarea/contenteditable 时不拦截
+      // 用 activeElement 而非 overlay 状态变量，避免 stale closure 问题
+      const activeEl = document.activeElement
+      const isXtermInput = containerRef.current?.contains(activeEl)
+      if (!isXtermInput && activeEl && (
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        (activeEl as HTMLElement).isContentEditable
+      )) return
 
       // 可打印字符（无修饰键）：不拦截，让 xterm 原生处理 → onData 回调发送
       // 这样浏览器 IME 才能正常工作（compositionstart → compositionend → onData）
