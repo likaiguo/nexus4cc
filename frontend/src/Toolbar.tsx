@@ -22,6 +22,7 @@ interface Props {
   onOpenFiles?: () => void
   onOpenWorkspace?: () => void
   onFitTerminal?: () => void
+  onShowCopySheet?: (text: string) => void
   /** When true: renders as a compact sidebar section (no theme/settings, flex-wrap key grid) */
   embedded?: boolean
   /** Controlled collapsed state (optional). If provided, component acts as controlled. */
@@ -70,7 +71,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onOpenFiles, onOpenWorkspace, onFitTerminal, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onOpenFiles, onOpenWorkspace, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const isControlled = controlledCollapsed !== undefined
@@ -228,7 +229,9 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           if (line) lines.push(line.translateToString(true))
         }
         const text = lines.join('\n')
-        await navigator.clipboard.writeText(text)
+        if (onShowCopySheet) {
+          onShowCopySheet(text)
+        }
       } catch {
         // ignore
       }
