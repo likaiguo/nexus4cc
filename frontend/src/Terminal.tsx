@@ -1130,6 +1130,9 @@ export default function Terminal({ token }: Props) {
         return
       }
       if (Math.abs(dy) < TAP_THRESHOLD && Math.abs(dx) < TAP_THRESHOLD) {
+        // Prevent the subsequent click event so xterm's internal handler
+        // doesn't steal focus from our managed input.
+        e.preventDefault()
         const xtermTa = termRef.current?.textarea
         // 工具栏展开时收起工具栏；若键盘也可见则一并收起
         if (toolbarCollapsedRef.current === false) {
@@ -1167,7 +1170,7 @@ export default function Terminal({ token }: Props) {
 
     container.addEventListener('touchstart', onTouchStart, { passive: true })
     container.addEventListener('touchmove', onTouchMove, { passive: false })
-    container.addEventListener('touchend', onTouchEnd, { passive: true })
+    container.addEventListener('touchend', onTouchEnd, { passive: false })
 
     // F-21: 拖拽上传文件
     function onDragOver(e: DragEvent) {
@@ -1727,7 +1730,7 @@ export default function Terminal({ token }: Props) {
               )}
             </div>
             <div className="flex-1 flex flex-col min-w-0 relative">
-              <div ref={containerRef} className="flex-1 overflow-hidden relative" onClick={() => termRef.current?.textarea?.focus()} />
+              <div ref={containerRef} className="flex-1 overflow-hidden relative" />
               {isConnecting && (
                 <div className="absolute inset-0 bg-nexus-bg flex flex-col items-center justify-center gap-3 z-10">
                   <div className="w-8 h-8 border-[3px] border-nexus-border border-t-nexus-accent rounded-full animate-spin" />

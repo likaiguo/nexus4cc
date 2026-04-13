@@ -431,8 +431,9 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   // ---- 统一粘贴 / 上传面板 ----
   const pasteBoxEl = showPasteBox && createPortal(
     <>
-      <div className="fixed inset-0 z-[700]" onPointerDown={() => setShowPasteBox(false)} />
-      <div className="fixed bottom-0 left-0 right-0 z-[701] bg-nexus-bg border-t border-nexus-border rounded-t-xl p-3.5 pb-6 shadow-[0_-4px_24px_rgba(0,0,0,0.35)]">
+      <div className="fixed inset-0 z-[700]" onClick={() => setShowPasteBox(false)} />
+      <div className="fixed bottom-0 left-0 right-0 z-[701] bg-nexus-bg border-t border-nexus-border rounded-t-xl p-3.5 pb-6 shadow-[0_-4px_24px_rgba(0,0,0,0.35)]"
+        onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <span className="text-nexus-text text-sm font-semibold">{t('toolbar.pasteUpload')}</span>
           <button onPointerDown={(e) => { e.preventDefault(); setShowPasteBox(false) }}
@@ -465,8 +466,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         />
         <button
           className="w-full mt-2 py-2.5 rounded-lg bg-nexus-accent text-white text-sm font-medium cursor-pointer border-none"
-          onPointerDown={(e) => {
-            e.preventDefault()
+          onClick={() => {
             const text = pasteBoxRef.current?.value ?? ''
             if (text) { sendToWs(text); setShowPasteBox(false) }
           }}
