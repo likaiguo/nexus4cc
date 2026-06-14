@@ -127,6 +127,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   const [editing, setEditing]         = useState(false)
   const [showPasteBox, setShowPasteBox] = useState(false)
   const pasteBoxRef   = useRef<HTMLTextAreaElement>(null)
+  const pasteInitialRef = useRef('')
   const pasteFileRef  = useRef<HTMLInputElement>(null)
   const fileInputRef  = useRef<HTMLInputElement>(null)
   const [drag, setDrag]               = useState<DragState | null>(null)
@@ -205,7 +206,15 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   }, [drag])
 
   useEffect(() => {
-    if (showPasteBox) setTimeout(() => pasteBoxRef.current?.focus(), 50)
+    if (showPasteBox) setTimeout(() => {
+      const el = pasteBoxRef.current
+      if (!el) return
+      el.value = pasteInitialRef.current
+      // Place cursor at end so the user can keep typing
+      const len = el.value.length
+      el.focus()
+      el.setSelectionRange(len, len)
+    }, 50)
   }, [showPasteBox])
 
   function saveConfig(c: ToolbarConfig) {
@@ -224,6 +233,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
       scrollToBottom()
     } else if (key.action === 'pasteClipboard') {
       // Try clipboard API silently (HTTPS only); fall back to the paste sheet
+      pasteInitialRef.current = ''
       if (navigator.clipboard) {
         let handled = false
         try {
@@ -238,9 +248,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           }
         } catch {}
         if (!handled) {
+          // Prefill the editable paste box with clipboard text; the user
+          // edits and taps Send to deliver it (do not send directly).
           try {
             const text = await navigator.clipboard.readText()
-            if (text) { sendToWs(text); handled = true }
+            if (text) pasteInitialRef.current = text
           } catch {}
         }
         if (handled) return
@@ -669,10 +681,8 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 }
               }
             }
-            setTimeout(() => {
-              const text = pasteBoxRef.current?.value ?? ''
-              if (text) { sendToWs(text); setShowPasteBox(false) }
-            }, 0)
+            // Text paste: let it land in the textarea so the user can keep
+            // editing, then tap Send to deliver.
           }}
         />
         <button
