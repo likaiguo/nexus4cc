@@ -243,6 +243,10 @@
     }
   },
   "windowStatus": {
+    "active": "In conversation",
+    "needsConfirm": "Awaiting confirmation",
+    "done": "Completed",
+    "idle": "Idle",
     "running": "Running",
     "waitingInput": "Waiting for input",
     "shellExited": "Shell exited",

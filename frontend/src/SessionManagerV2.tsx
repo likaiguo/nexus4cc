@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardR
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import { WindowStatus, STATUS_DOT_COLOR, STATUS_DOT_PULSE, STATUS_DOT_TITLE } from './windowStatus'
 
 const STORAGE_KEY = 'nexus_token'
 
@@ -74,16 +75,16 @@ function useIsDesktop() {
   return isDesktop
 }
 
-const STATUS_DOT = {
-  running: '#22c55e',
-  idle: '#9ca3af',
-  waiting: '#eab308',
-  shell: '#6b7280',
-}
+// Full-fleet channel status: { "<session>": { "<index>": WindowStatus } }
+type ChannelStatusMap = Record<string, Record<string, WindowStatus>>
 
-function getChannelStatus(channel: Channel, isActive: boolean): keyof typeof STATUS_DOT {
-  if (channel.name === 'shell' || channel.name.endsWith('-shell')) return 'shell'
-  return isActive ? 'running' : 'idle'
+// Aggregate a project's channels into a single marker by priority:
+// needs-confirm > done > active > neutral.
+function aggregateProjectStatus(statuses: WindowStatus[]): WindowStatus {
+  if (statuses.includes('needs-confirm')) return 'needs-confirm'
+  if (statuses.includes('done')) return 'done'
+  if (statuses.includes('active')) return 'active'
+  return 'idle'
 }
 
 export interface SessionManagerV2Handle {
@@ -162,6 +163,56 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     if (currentProject) fetchChannels(currentProject)
   }, [currentProject, fetchChannels])
 
+  // Full-fleet channel attention status (all projects, all channels).
+  const [channelStatus, setChannelStatus] = useState<ChannelStatusMap>({})
+  const fetchChannelStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/channel-status', { headers })
+      if (!r.ok) return
+      setChannelStatus(await r.json())
+    } catch { /* transient — keep last known */ }
+  }, [token])
+  useEffect(() => {
+    fetchChannelStatus()
+    const id = setInterval(fetchChannelStatus, 4000)
+    return () => clearInterval(id)
+  }, [fetchChannelStatus])
+
+  // Reported status for a single channel of a project (falls back to idle).
+  const statusOf = useCallback((projectName: string, index: number): WindowStatus => {
+    return channelStatus[projectName]?.[String(index)] ?? 'idle'
+  }, [channelStatus])
+
+  // Aggregate marker for a project across its channels.
+  const projectStatusOf = useCallback((projectName: string): WindowStatus => {
+    const m = channelStatus[projectName]
+    if (!m) return 'idle'
+    return aggregateProjectStatus(Object.values(m))
+  }, [channelStatus])
+
+  // Status dot shared by project rows and channel rows.
+  const renderDot = useCallback((status: WindowStatus) => (
+    <span
+      className={`w-2 h-2 rounded-full shrink-0 mt-0.5${STATUS_DOT_PULSE[status] ? ' nexus-attn-pulse' : ''}`}
+      style={{ background: STATUS_DOT_COLOR[status] }}
+      title={t(STATUS_DOT_TITLE[status])}
+    />
+  ), [t])
+
+  // Clear sticky attention when the user enters a channel (optimistic + server).
+  const markChannelSeen = useCallback((projectName: string, index: number) => {
+    setChannelStatus(prev => {
+      const cur = prev[projectName]?.[String(index)]
+      if (cur !== 'needs-confirm' && cur !== 'done') return prev
+      return { ...prev, [projectName]: { ...prev[projectName], [String(index)]: 'active' } }
+    })
+    fetch('/api/channel-status/seen', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: projectName, index }),
+    }).catch(() => {})
+  }, [token])
+
   const handleRefresh = useCallback(() => {
     fetchProjects()
     if (currentProject) fetchChannels(currentProject)
@@ -184,6 +235,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   }
 
   const doSwitchChannel = async (channel: Channel, shouldClose: boolean) => {
+    markChannelSeen(currentProject, channel.index)
     try {
       const r = await fetch(`/api/sessions/${channel.index}/attach?session=${encodeURIComponent(currentProject)}`, {
         method: 'POST',
@@ -437,7 +489,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   }}
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) } : undefined}
                 >
-                  <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-nexus-muted'}`} />
+                  {renderDot(projectStatusOf(project.name))}
                   <div className="flex-1 min-w-0">
                     <div className="text-sm text-nexus-text truncate leading-tight" title={project.name}>{project.name}</div>
                     {project.path && (
@@ -493,7 +545,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
               </div>
             ) : channels.map(channel => {
               const isActive = channel.index === currentChannelIndex
-              const status = getChannelStatus(channel, isActive)
+              const status = statusOf(currentProject, channel.index)
               return (
                 <div
                   key={channel.index}
@@ -506,7 +558,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   onTouchEnd={(e) => { if (!isDesktop) { e.preventDefault(); handleChannelTouchEnd(channel) } }}
                   onTouchMove={() => { if (!isDesktop) handleChannelTouchMove() }}
                 >
-                  <span className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ background: STATUS_DOT[status] }} title={status} />
+                  {renderDot(status)}
                   <span className="text-nexus-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
                   <span className="flex-1 text-sm text-nexus-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
                   {!isSidebar && (
@@ -609,7 +661,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   onPointerDown={() => { if (project.name !== currentProject) handleProjectClick(project) }}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) }}
                 >
-                  <span className={`w-2 h-2 rounded-full shrink-0 mt-0.5 ${isActive ? 'bg-blue-500' : 'bg-nexus-muted'}`} />
+                  {renderDot(projectStatusOf(project.name))}
                   <div className="flex-1 min-w-0">
                     <div className="text-sm text-nexus-text truncate leading-tight" title={project.name}>{project.name}</div>
                     {project.path && (
@@ -651,7 +703,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
               </div>
             ) : channels.map(channel => {
               const isActive = channel.index === currentChannelIndex
-              const status = getChannelStatus(channel, isActive)
+              const status = statusOf(currentProject, channel.index)
               return (
                 <div
                   key={channel.index}
@@ -661,7 +713,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   onPointerDown={() => { doSwitchChannel(channel, false) }}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) }}
                 >
-                  <span className="w-2 h-2 rounded-full shrink-0 mt-0.5" style={{ background: STATUS_DOT[status] }} title={status} />
+                  {renderDot(status)}
                   <span className="text-nexus-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
                   <span className="flex-1 text-sm text-nexus-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
                 </div>

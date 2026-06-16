@@ -1113,6 +1113,33 @@ app.get('/api/projects/:name/channels', authMiddleware, (req, res) => {
   )
 })
 
+// GET /api/channel-status — 聚合返回全部项目所有频道的注意力状态
+// 形如 { "<session>": { "<index>": "active|needs-confirm|done|idle|shell" } }
+app.get('/api/channel-status', authMiddleware, (req, res) => {
+  const result = {}
+  for (const key of channelAttention.keys()) {
+    const sep = key.lastIndexOf(':')
+    if (sep < 0) continue
+    const session = key.slice(0, sep)
+    const index = key.slice(sep + 1)
+    if (!result[session]) result[session] = {}
+    result[session][index] = attnReportedStatus(session, parseInt(index, 10))
+  }
+  res.json(result)
+})
+
+// POST /api/channel-status/seen — 进入频道即清除其粘性提醒(needs-confirm/done)
+// body: { session, index }
+app.post('/api/channel-status/seen', authMiddleware, (req, res) => {
+  const { session, index } = req.body || {}
+  if (!session || index === undefined || index === null) {
+    return res.status(400).json({ error: 'session and index required' })
+  }
+  attnClear(String(session), parseInt(index, 10))
+  res.json({ ok: true })
+})
+
+
 // POST /api/projects — 新建 Project（创建 tmux session）
 // body: { path, shell_type?, profile? }
 // project 名称基于路径自动生成
@@ -1310,6 +1337,7 @@ app.post('/api/projects/:name/activate', authMiddleware, (req, res) => {
     }
   }
   // 返回 session 信息，前端据此切换 WebSocket 连接
+  if (lastChannel !== null) attnClear(sessionName, lastChannel)
   res.json({ active: true, project: sessionName, lastChannel })
 })
 
@@ -2060,6 +2088,144 @@ try {
   }
   if (changed) saveTasks(staleTasks)
 } catch {}
+
+// ---- Channel attention state (F: channel-status-markers) ----
+// Poll every tmux window across every session, classify each into a status,
+// and remember the sticky "needs-confirm" / "done" states until the user
+// enters that channel. State lives in memory only (no DB, per NORTH-STAR).
+//
+// channelAttention: key "session:index" -> {
+//   sticky: 'needs-confirm' | 'done' | null,   // persists until cleared (seen)
+//   lastSampleHash: string,                     // detect new output
+//   lastActiveAt: number,                       // ms of last output change
+//   wasActive: boolean,                          // for active->idle falling edge
+// }
+const channelAttention = new Map()
+
+const ATTENTION_POLL_MS = Number(process.env.ATTENTION_POLL_MS || 3000)
+const ATTENTION_CAPTURE_LINES = Number(process.env.ATTENTION_CAPTURE_LINES || 50)
+const ATTENTION_IDLE_MS = Number(process.env.ATTENTION_IDLE_MS || 4000)
+const ATTENTION_MAX_CHANNELS = Number(process.env.ATTENTION_MAX_CHANNELS || 200)
+
+// --- Heuristics mirrored from frontend/src/windowStatus.ts (single source of
+// truth lives there; keep these regexes in sync). ---
+function attnStripAnsi(s) {
+  return s.replace(/\x1b\[[0-9;?]*[mGKHFJABCDsulhr]/g, '').replace(/\r/g, '')
+}
+function attnDetectNeedsConfirm(output) {
+  const text = attnStripAnsi(output)
+  return (
+    /❯\s*\d+\.\s/.test(text) ||
+    /›\s*\d+\.\s/.test(text) ||
+    /\bDo you want to proceed\b/i.test(text) ||
+    /\bWould you like to proceed\b/i.test(text) ||
+    /\(y\/n\)/i.test(text) ||
+    /\[y\/N\]/i.test(text)
+  )
+}
+function attnLastNonEmptyLine(output) {
+  const lines = attnStripAnsi(output).split('\n').map(l => l.trimEnd()).filter(l => l.length > 0)
+  return lines[lines.length - 1] || ''
+}
+function attnDetectShellPrompt(lastLine) {
+  return /[$#]\s*$/.test(lastLine)
+}
+
+// Cheap hash to detect whether the captured pane changed since last poll.
+function attnHash(s) {
+  let h = 0
+  for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0 }
+  return `${s.length}:${h}`
+}
+
+function attnSample(session, index) {
+  try {
+    return execFileSync(
+      'tmux',
+      ['capture-pane', '-p', '-t', `${session}:${index}`, '-S', `-${ATTENTION_CAPTURE_LINES}`],
+      { encoding: 'utf8', stdio: 'pipe', maxBuffer: 1024 * 1024 }
+    )
+  } catch {
+    return null
+  }
+}
+
+// Compute and persist a channel's attention state from a fresh sample.
+function attnUpdateChannel(session, index, now) {
+  const key = ptyKey(session, index)
+  const sample = attnSample(session, index)
+  if (sample === null) return // window/session gone; leave prior state untouched
+
+  let st = channelAttention.get(key)
+  if (!st) { st = { sticky: null, lastSampleHash: '', lastActiveAt: 0, wasActive: false }; channelAttention.set(key, st) }
+
+  const hash = attnHash(sample)
+  const changed = hash !== st.lastSampleHash
+  if (changed) { st.lastSampleHash = hash; st.lastActiveAt = now }
+
+  const idle = (now - st.lastActiveAt) >= ATTENTION_IDLE_MS
+  const lastLine = attnLastNonEmptyLine(sample)
+  const isShell = attnDetectShellPrompt(lastLine)
+  const isActive = !idle
+  st.realtime = isActive ? 'active' : (isShell ? 'shell' : 'idle')
+
+  // Sticky transitions (only set here; cleared on "seen").
+  if (attnDetectNeedsConfirm(sample)) {
+    st.sticky = 'needs-confirm'
+  } else if (st.wasActive && idle && !isShell && st.sticky !== 'needs-confirm') {
+    // Falling edge active -> idle with non-shell tail == session finished.
+    st.sticky = 'done'
+  }
+  st.wasActive = isActive
+}
+
+// Public: reported status applies sticky priority over the realtime signal.
+function attnReportedStatus(session, index) {
+  const key = ptyKey(session, index)
+  const st = channelAttention.get(key)
+  if (!st) return 'idle'
+  if (st.sticky === 'needs-confirm') return 'needs-confirm'
+  if (st.sticky === 'done') return 'done'
+  return st.realtime || 'idle'
+}
+
+// Clear sticky attention for a channel (user entered / "seen").
+function attnClear(session, index) {
+  const st = channelAttention.get(ptyKey(session, index))
+  if (st) { st.sticky = null; st.wasActive = false }
+}
+
+// One poll cycle across all sessions/windows.
+function attnPollOnce() {
+  let sessions
+  try {
+    sessions = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', stdio: 'pipe' })
+      .trim().split('\n').filter(Boolean)
+  } catch {
+    return // no tmux server running
+  }
+  const now = Date.now()
+  let budget = ATTENTION_MAX_CHANNELS
+  for (const session of sessions) {
+    if (budget <= 0) break
+    let windows
+    try {
+      windows = execFileSync('tmux', ['list-windows', '-t', session, '-F', '#{window_index}'], { encoding: 'utf8', stdio: 'pipe' })
+        .trim().split('\n').filter(Boolean)
+    } catch { continue }
+    for (const w of windows) {
+      if (budget <= 0) break
+      attnUpdateChannel(session, parseInt(w, 10), now)
+      budget--
+    }
+  }
+}
+
+const attnTimer = setInterval(() => {
+  try { attnPollOnce() } catch (e) { /* never crash the process on a poll error */ }
+}, ATTENTION_POLL_MS)
+if (attnTimer.unref) attnTimer.unref()
+
 
 server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Nexus listening on :${PORT}`);
