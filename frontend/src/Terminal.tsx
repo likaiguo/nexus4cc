@@ -1654,6 +1654,42 @@ export default function Terminal({ token }: Props) {
     const saved = localStorage.getItem('nexus_sidebar_collapsed')
     return saved !== null ? saved === 'true' : true // default collapsed
   })
+  // Resizable sidebar width (expanded only); drag the divider to adjust.
+  const SIDEBAR_MIN = 160
+  const SIDEBAR_MAX = 560
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = parseInt(localStorage.getItem('nexus_sidebar_width') || '', 10)
+    return Number.isFinite(saved) ? Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, saved)) : 220
+  })
+  const sidebarResizeRef = useRef<{ startX: number; startW: number } | null>(null)
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      const drag = sidebarResizeRef.current
+      if (!drag) return
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, drag.startW + (e.clientX - drag.startX)))
+      setSidebarWidth(next)
+    }
+    function onUp() {
+      if (!sidebarResizeRef.current) return
+      sidebarResizeRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setSidebarWidth(w => { localStorage.setItem('nexus_sidebar_width', String(w)); return w })
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [])
+  const startSidebarResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    sidebarResizeRef.current = { startX: e.clientX, startW: sidebarWidth }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [sidebarWidth])
   // Sidebar toggled only by the explicit chevron buttons
   useEffect(() => {
     const el = toolbarWrapRef.current
@@ -1823,7 +1859,7 @@ export default function Terminal({ token }: Props) {
             {/* Collapsible Sidebar */}
             <div
               className="flex-shrink-0 flex flex-col bg-nexus-bg"
-              style={{ width: sidebarCollapsed ? 48 : 220, overflow: 'hidden' }}
+              style={{ width: sidebarCollapsed ? 48 : sidebarWidth, overflow: 'hidden' }}
             >
               {sidebarCollapsed ? (
                 /* Collapsed Sidebar - Icon Only */
@@ -1967,6 +2003,18 @@ export default function Terminal({ token }: Props) {
                 </div>
               )}
             </div>
+            {!sidebarCollapsed && (
+              <div
+                onPointerDown={startSidebarResize}
+                className="flex-shrink-0 w-1 cursor-col-resize bg-nexus-border hover:bg-nexus-accent transition-colors relative group/resizer"
+                title="拖动调整宽度"
+                role="separator"
+                aria-orientation="vertical"
+              >
+                {/* widen the hit area without affecting layout */}
+                <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
+              </div>
+            )}
             {/* Embedded File Browser Sidebar */}
             {canEmbedBrowser && showFileBrowser && (
               <Suspense fallback={null}>
