@@ -154,11 +154,13 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     if (!opts?.silent) setLoadingChannels(true)
     try {
       const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/channels`, { headers })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const data = await r.json()
       setChannels((data as any).channels || [])
     } catch (e: unknown) {
+      // Transient failure (e.g. backend briefly busy): keep the last known
+      // list instead of clearing it, so channels don't flicker/vanish.
       console.error('Load channels failed:', e)
-      setChannels([])
     } finally {
       if (!opts?.silent) setLoadingChannels(false)
     }

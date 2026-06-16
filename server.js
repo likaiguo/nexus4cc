@@ -1710,21 +1710,26 @@ function attnHash(s) {
 }
 
 function attnSample(session, index) {
-  try {
-    return execFileSync(
+  // Async, non-blocking capture-pane. Returns a Promise<string|null>.
+  // Using execFile (not execFileSync) is critical: the poller runs across
+  // every session×window, and a synchronous fork-per-window would freeze the
+  // Node event loop for hundreds of ms each cycle — starving the WS/HTTP
+  // handlers and making the frontend's own tmux requests fail (channels
+  // would then briefly vanish). See channel-status-markers bugfix.
+  return new Promise((resolve) => {
+    execFile(
       'tmux',
       ['capture-pane', '-p', '-t', `${session}:${index}`, '-S', `-${ATTENTION_CAPTURE_LINES}`],
-      { encoding: 'utf8', stdio: 'pipe', maxBuffer: 1024 * 1024 }
+      { encoding: 'utf8', maxBuffer: 1024 * 1024 },
+      (err, stdout) => resolve(err ? null : stdout)
     )
-  } catch {
-    return null
-  }
+  })
 }
 
 // Compute and persist a channel's attention state from a fresh sample.
-function attnUpdateChannel(session, index, now) {
+async function attnUpdateChannel(session, index, now) {
   const key = ptyKey(session, index)
-  const sample = attnSample(session, index)
+  const sample = await attnSample(session, index)
   if (sample === null) return // window/session gone; leave prior state untouched
 
   let st = channelAttention.get(key)
@@ -1766,34 +1771,41 @@ function attnClear(session, index) {
   if (st) { st.sticky = null; st.wasActive = false }
 }
 
-// One poll cycle across all sessions/windows.
-function attnPollOnce() {
-  let sessions
+// Async list helper — never blocks the event loop.
+function attnList(args) {
+  return new Promise((resolve) => {
+    execFile('tmux', args, { encoding: 'utf8', maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      resolve(err ? [] : stdout.trim().split('\n').filter(Boolean))
+    })
+  })
+}
+
+// One poll cycle across all sessions/windows — fully async and serial so we
+// never fork more than one tmux child at a time and never block the loop.
+let attnPolling = false
+async function attnPollOnce() {
+  if (attnPolling) return // skip if the previous cycle is still running
+  attnPolling = true
   try {
-    sessions = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8', stdio: 'pipe' })
-      .trim().split('\n').filter(Boolean)
-  } catch {
-    return // no tmux server running
-  }
-  const now = Date.now()
-  let budget = ATTENTION_MAX_CHANNELS
-  for (const session of sessions) {
-    if (budget <= 0) break
-    let windows
-    try {
-      windows = execFileSync('tmux', ['list-windows', '-t', session, '-F', '#{window_index}'], { encoding: 'utf8', stdio: 'pipe' })
-        .trim().split('\n').filter(Boolean)
-    } catch { continue }
-    for (const w of windows) {
+    const sessions = await attnList(['list-sessions', '-F', '#{session_name}'])
+    let budget = ATTENTION_MAX_CHANNELS
+    for (const session of sessions) {
       if (budget <= 0) break
-      attnUpdateChannel(session, parseInt(w, 10), now)
-      budget--
+      const windows = await attnList(['list-windows', '-t', session, '-F', '#{window_index}'])
+      for (const w of windows) {
+        if (budget <= 0) break
+        const now = Date.now()
+        await attnUpdateChannel(session, parseInt(w, 10), now)
+        budget--
+      }
     }
+  } finally {
+    attnPolling = false
   }
 }
 
 const attnTimer = setInterval(() => {
-  try { attnPollOnce() } catch (e) { /* never crash the process on a poll error */ }
+  attnPollOnce().catch(() => { /* never crash the process on a poll error */ })
 }, ATTENTION_POLL_MS)
 if (attnTimer.unref) attnTimer.unref()
 
