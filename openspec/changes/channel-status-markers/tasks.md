@@ -41,6 +41,6 @@
 
 - [x] 7.1 前端 `npx tsc --noEmit` 通过(并 `npm run build` 成功、`node --check server.js` OK)
 - [x] 7.2 重建前端并重启 nexus(本机 node 进程),确认服务可达(:59000 响应、新端点 401 鉴权、无 poll 错误)
-- [ ] 7.3 手动验证:活跃频道绿色;触发 Claude 确认提示→该频道+项目醒目脉冲;任务跑完→蓝色 done;进入该频道后 needs-confirm/done 标记消失,active 不被误清 — **需用户在浏览器登录交互**
-- [ ] 7.4 多项目场景验证:切换项目前即可在列表看到其它项目的 needs-confirm/done 聚合标记 — **需用户在浏览器登录交互**
+- [x] 7.3 手动验证:活跃频道绿色;触发 Claude 确认提示→该频道+项目醒目脉冲;任务跑完→蓝色 done;进入该频道后 needs-confirm/done 标记消失,active 不被误清 — 用户已在浏览器验证通过
+- [x] 7.4 多项目场景验证:切换项目前即可在列表看到其它项目的 needs-confirm/done 聚合标记 — 用户已在浏览器验证通过
 
