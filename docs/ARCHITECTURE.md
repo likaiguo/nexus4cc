@@ -51,7 +51,9 @@ tmux attach-session -t <session>:<window>
 | POST | `/api/projects` | Bearer | 创建 project |
 | GET | `/api/projects/:name/channels` | Bearer | 列出 project 下的 channel |
 | POST | `/api/projects/:name/channels` | Bearer | 创建 channel（新窗口） |
-| POST | `/api/projects/:name/activate` | Bearer | 激活 project |
+| POST | `/api/projects/:name/activate` | Bearer | 激活 project（并清除目标频道粘性提醒） |
+| GET | `/api/channel-status` | Bearer | 全部项目所有频道的注意力状态(F-21) |
+| POST | `/api/channel-status/seen` | Bearer | 进入频道即清除粘性提醒(F-21) |
 | POST | `/api/projects/:name/rename` | Bearer | 重命名 project |
 | DELETE | `/api/projects/:name` | Bearer | 删除 project |
 | **工作区文件** | | | |
@@ -98,7 +100,48 @@ function getOrCreatePty(session, windowIndex) {
 }
 ```
 
+### 频道状态轮询（channelAttention，F-21）
+
+```javascript
+// 全部 session × window 的注意力状态(内存,无持久化)
+const channelAttention = new Map()
+// key = "session:windowIndex"
+// entry: { realtime, sticky: 'needs-confirm'|'done'|null, lastSampleHash, lastActiveAt, wasActive }
+
+// 定时器(默认 3s)枚举全部 session×window,tmux capture-pane 采样,
+// 启发式判定状态;needs-confirm/done 为粘性提醒态,进入频道(attach/activate/seen)时清除。
+// 启发式正则镜像自 frontend/src/windowStatus.ts(单一来源)。
+```
+
+- 与 `ptyMap` 区别:`ptyMap` 仅覆盖已连接频道;`channelAttention` 主动轮询**全部**频道,使切换项目前即可看到其它项目状态。
+- 报告优先级:`needs-confirm` > `done` > 实时态(`active`/`shell`/`idle`)。
+- 可配:`ATTENTION_POLL_MS` / `ATTENTION_CAPTURE_LINES` / `ATTENTION_IDLE_MS` / `ATTENTION_MAX_CHANNELS`。
+
 **Resize 策略**: 多客户端时直接使用当前客户端尺寸（而非所有客户端的最小值），避免多设备切换时尺寸混乱。
+
+### 任务系统（runTask 统一抽象）
+
+```javascript
+function runTask(prompt, cwd, opts) {
+  // opts: { sessionName, source, tmuxSession, profile, onChunk, onDone }
+  // 1. 创建任务记录（立即写入 data/tasks.json）
+  // 2. spawn claude -p <prompt> --dangerously-skip-permissions [--profile <p>]
+  // 3. stdout/stderr → onChunk() 回调
+  // 4. close → updateTask() + onDone() 回调
+  // 返回 { taskId, kill }
+}
+```
+
+- Web 端（`POST /api/tasks`）通过 `onChunk` 推 SSE 帧
+- Telegram 端通过 `onChunk` 定时 editMessageText（每 5 秒）
+- `tasks.json` 上限 200 条（`saveTasks` 强制执行）
+
+### Telegram Bot
+
+- 支持命令：`/list`（列窗口）、`/switch <name>`（切换目标窗口）
+- 接收消息 → `runTask()` 在目标窗口 cwd 执行
+- 接收文件/图片 → 下载到 WORKSPACE_ROOT → `runTask()` 附路径执行
+- 目标窗口状态：持久化在内存 `telegramTargetWindow`（服务重启后重置）
 
 ---
 

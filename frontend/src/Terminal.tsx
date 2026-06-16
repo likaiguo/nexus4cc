@@ -455,7 +455,7 @@ export default function Terminal({ token }: Props) {
     const taskBadge = ''
     if (!win) { document.title = `${taskBadge}Nexus`; return }
     const status = getWindowStatus(windowOutputs[activeWindowIndex])
-    const statusSymbol = status === 'running' ? '⚡' : status === 'waiting' ? '⏳' : status === 'shell' ? '💤' : ''
+    const statusSymbol = status === 'active' ? '⚡' : status === 'needs-confirm' ? '⏳' : status === 'done' ? '✅' : status === 'shell' ? '💤' : ''
     document.title = `${taskBadge}${statusSymbol ? statusSymbol + ' ' : ''}${win.name} — Nexus`
     return () => { document.title = 'Nexus' }
   }, [windows, activeWindowIndex, windowOutputs])
@@ -639,6 +639,12 @@ export default function Terminal({ token }: Props) {
       if (r.ok) {
         setActiveWindowIndex(index)
         localStorage.setItem(WINDOW_KEY, String(index))
+        // 进入频道即清除其粘性提醒(needs-confirm/done)
+        fetch('/api/channel-status/seen', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session, index }),
+        }).catch(() => {})
         // 暂停轮询 3 秒，避免 optimistic 状态被覆盖
         pausePollingRef.current = true
         setTimeout(() => { pausePollingRef.current = false }, 3000)

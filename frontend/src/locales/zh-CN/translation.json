@@ -254,6 +254,10 @@
     }
   },
   "windowStatus": {
+    "active": "对话中",
+    "needsConfirm": "等待确认",
+    "done": "已完成",
+    "idle": "空闲",
     "running": "运行中",
     "waitingInput": "等待输入",
     "shellExited": "已退出 shell",

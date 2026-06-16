@@ -142,17 +142,18 @@ POST /api/windows
 
 ```
 Channel 列表项（带 # 前缀）：
-  #general      ●    ← 绿色点 = 运行中
-  #backend      ○    ← 灰色点 = 空闲
-  #deploy      ⏳    ← 黄色点 = 等待输入
-  #shell       💤    ← 灰色 = shell 状态
+  #general      ●    ← 绿色点 = 对话中(active)
+  #backend      ●    ← 红色脉冲点 = 等待用户确认(needs-confirm)
+  #deploy       ●    ← 蓝色点 = 会话完成(done)
+  #docs         ○    ← 灰色点 = 空闲(idle)
+  #shell       💤    ← 深灰 = shell 状态
 
-Project 列表项：
-  ● nexus      (3)   ← 蓝色高亮 = 当前激活，(3)=3个channel
-  ○ my-app     (1)   ← 未激活，有1个channel
-  ○ backend-api (2)  ← 未激活，有2个channel
-  ○ legacy          ← 无括号 = 该session没有窗口（异常）
+Project 列表项（标记聚合其下所有 channel）：
+  ● nexus      (3)   ← 聚合标记:任一 needs-confirm→红脉冲;否则 done→蓝;否则 active→绿
+  ○ my-app     (1)   ← 未激活,有1个channel
 ```
+
+> 详见下方「Feature Detail: 频道状态标记(F-21)」。
 
 ### API 设计（简化版）
 
@@ -296,6 +297,51 @@ interface Channel {
   status: 'running' | 'idle' | 'waiting' | 'shell'; // 状态推断
 }
 ```
+
+---
+
+## Feature Detail: 频道状态标记（F-21）
+
+### 问题
+
+用户管理多个项目(tmux session)与频道(tmux window)时,无法一眼看出哪个频道正在对话、哪个在等自己确认、哪个已完成;且原状态点仅对「当前已连接的活跃 session」前端实时计算,切换项目前看不到其它项目的状态。
+
+### 状态定义
+
+| 状态 | 颜色 | 语义 | 类型 |
+|---|---|---|---|
+| `active` | 绿色 | 正在运行/对话中 | 实时态 |
+| `needs-confirm` | 红色脉冲 | 检测到 Claude 确认提示,等待用户操作 | 粘性提醒态 |
+| `done` | 蓝色 | 会话完成(active→idle 下降沿,末行非 shell) | 粘性提醒态 |
+| `idle` / `shell` | 灰 / 深灰 | 空闲 / 已退回 shell | 实时态 |
+
+- **粘性提醒态**:`needs-confirm` / `done` 一旦置位即保持,直到用户**进入该频道**才清除(已读语义),无需额外「已读」按钮。
+- **实时态**:`active` / `idle` / `shell` 随轮询刷新。
+- **报告优先级**:`needs-confirm` > `done` > 实时态。
+- **项目级聚合**:任一频道 `needs-confirm`→项目红脉冲;否则任一 `done`→蓝;否则任一 `active`→绿;否则中性。
+
+### 检测与架构
+
+- 后端定时(默认 3s)对**全部 session × window** 执行 `tmux capture-pane` 采样,启发式解析终端输出判定状态,覆盖未连接的频道。
+- 状态存于进程内存(`channelAttention` Map),不引入数据库或持久化文件(符合 NORTH-STAR)。
+- 启发式特征集中在 `frontend/src/windowStatus.ts`(前端实时点)并在 `server.js` 镜像(后端全量+粘性),保持单一来源。
+
+### API 设计
+
+```
+GET  /api/channel-status        → { "<session>": { "<index>": status } } 全部项目频道状态
+POST /api/channel-status/seen   → body { session, index } 进入频道即清除粘性提醒
+POST /api/projects/:name/activate → 激活项目时一并清除目标频道粘性提醒
+```
+
+### 配置(环境变量)
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ATTENTION_POLL_MS` | 3000 | 全频道轮询周期(ms) |
+| `ATTENTION_CAPTURE_LINES` | 50 | 单频道 capture-pane 采样行数 |
+| `ATTENTION_IDLE_MS` | 4000 | 判定 idle 的无输出阈值(ms) |
+| `ATTENTION_MAX_CHANNELS` | 200 | 单轮采样频道数软上限 |
 
 ---
 
