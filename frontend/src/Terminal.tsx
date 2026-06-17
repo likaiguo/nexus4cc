@@ -27,8 +27,103 @@ const ANSI256: string[] = (() => {
   return c
 })()
 
-function ansiToHtml(raw: string): string {
-  const style = { fg: '', bg: '', bold: false, italic: false, dim: false }
+type AnsiStyle = {
+  fg: string
+  bg: string
+  bold: boolean
+  italic: boolean
+  dim: boolean
+  inverse: boolean
+  underline: boolean
+}
+
+const MIN_TEXT_CONTRAST = 4.5
+const HISTORY_FETCH_LINES = 50000
+
+function parseColor(color: string): { r: number; g: number; b: number } | null {
+  const value = color.trim()
+  const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i)
+  if (hex) {
+    const h = hex[1]
+    if (h.length === 3) {
+      return {
+        r: parseInt(h[0] + h[0], 16),
+        g: parseInt(h[1] + h[1], 16),
+        b: parseInt(h[2] + h[2], 16),
+      }
+    }
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+    }
+  }
+  const rgb = value.match(/^rgba?\(\s*(\d{1,3})[,\s]+(\d{1,3})[,\s]+(\d{1,3})/i)
+  if (rgb) {
+    return {
+      r: Math.max(0, Math.min(255, Number(rgb[1]))),
+      g: Math.max(0, Math.min(255, Number(rgb[2]))),
+      b: Math.max(0, Math.min(255, Number(rgb[3]))),
+    }
+  }
+  return null
+}
+
+function relativeLuminance(color: string): number | null {
+  const rgb = parseColor(color)
+  if (!rgb) return null
+  const channel = (v: number) => {
+    const n = v / 255
+    return n <= 0.03928 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4)
+  }
+  return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b)
+}
+
+function contrastRatio(a: string, b: string): number {
+  const la = relativeLuminance(a)
+  const lb = relativeLuminance(b)
+  if (la === null || lb === null) return MIN_TEXT_CONTRAST
+  const lighter = Math.max(la, lb)
+  const darker = Math.min(la, lb)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function readableForeground(bg: string): string {
+  const dark = '#0f172a'
+  const light = '#f8fafc'
+  return contrastRatio(dark, bg) >= contrastRatio(light, bg) ? dark : light
+}
+
+function ensureReadableForeground(fg: string, bg: string): string {
+  return contrastRatio(fg, bg) >= MIN_TEXT_CONTRAST ? fg : readableForeground(bg)
+}
+
+function paletteFromTheme(theme: ITheme): string[] {
+  return [
+    theme.black ?? ANSI256[0],
+    theme.red ?? ANSI256[1],
+    theme.green ?? ANSI256[2],
+    theme.yellow ?? ANSI256[3],
+    theme.blue ?? ANSI256[4],
+    theme.magenta ?? ANSI256[5],
+    theme.cyan ?? ANSI256[6],
+    theme.white ?? ANSI256[7],
+    theme.brightBlack ?? ANSI256[8],
+    theme.brightRed ?? ANSI256[9],
+    theme.brightGreen ?? ANSI256[10],
+    theme.brightYellow ?? ANSI256[11],
+    theme.brightBlue ?? ANSI256[12],
+    theme.brightMagenta ?? ANSI256[13],
+    theme.brightCyan ?? ANSI256[14],
+    theme.brightWhite ?? ANSI256[15],
+  ]
+}
+
+function ansiToHtml(raw: string, theme: ITheme = { background: '#0f172a', foreground: '#e2e8f0' }): string {
+  const defaultFg = theme.foreground ?? '#e2e8f0'
+  const defaultBg = theme.background ?? '#0f172a'
+  const palette = paletteFromTheme(theme)
+  const style: AnsiStyle = { fg: '', bg: '', bold: false, italic: false, dim: false, inverse: false, underline: false }
   const out: string[] = []
   let buf = ''
 
@@ -36,13 +131,25 @@ function ansiToHtml(raw: string): string {
     if (!buf) return
     const esc = buf.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const css: string[] = []
-    if (style.fg) css.push(`color:${style.fg}`)
-    if (style.bg) css.push(`background-color:${style.bg}`)
+    const rawFg = style.inverse ? (style.bg || defaultBg) : (style.fg || defaultFg)
+    const rawBg = style.inverse ? (style.fg || defaultFg) : (style.bg || defaultBg)
+    const fg = ensureReadableForeground(rawFg, rawBg)
+    const bg = rawBg
+    if (style.fg || style.bg || style.inverse || fg !== defaultFg) css.push(`color:${fg}`)
+    if (style.bg || style.inverse) css.push(`background-color:${bg}`)
     if (style.bold) css.push('font-weight:700')
     if (style.italic) css.push('font-style:italic')
+    if (style.underline) css.push('text-decoration:underline')
     if (style.dim) css.push('opacity:0.6')
     out.push(css.length ? `<span style="${css.join(';')}">${esc}</span>` : esc)
     buf = ''
+  }
+
+  const setIndexedFg = (index: number) => {
+    style.fg = index < 16 ? (palette[index] ?? '') : (ANSI256[index] ?? '')
+  }
+  const setIndexedBg = (index: number) => {
+    style.bg = index < 16 ? (palette[index] ?? '') : (ANSI256[index] ?? '')
   }
 
   const applyParams = (params: string) => {
@@ -50,21 +157,25 @@ function ansiToHtml(raw: string): string {
     let j = 0
     while (j < codes.length) {
       const c = codes[j]
-      if (c === 0) { style.fg = ''; style.bg = ''; style.bold = false; style.italic = false; style.dim = false }
+      if (c === 0) { style.fg = ''; style.bg = ''; style.bold = false; style.italic = false; style.dim = false; style.inverse = false; style.underline = false }
       else if (c === 1) style.bold = true
       else if (c === 2) style.dim = true
       else if (c === 3) style.italic = true
+      else if (c === 4) style.underline = true
+      else if (c === 7) style.inverse = true
       else if (c === 22) { style.bold = false; style.dim = false }
       else if (c === 23) style.italic = false
-      else if (c >= 30 && c <= 37) style.fg = ANSI256[c - 30]
+      else if (c === 24) style.underline = false
+      else if (c === 27) style.inverse = false
+      else if (c >= 30 && c <= 37) setIndexedFg(c - 30)
       else if (c === 39) style.fg = ''
-      else if (c >= 40 && c <= 47) style.bg = ANSI256[c - 40]
+      else if (c >= 40 && c <= 47) setIndexedBg(c - 40)
       else if (c === 49) style.bg = ''
-      else if (c >= 90 && c <= 97) style.fg = ANSI256[c - 90 + 8]
-      else if (c >= 100 && c <= 107) style.bg = ANSI256[c - 100 + 8]
-      else if (c === 38 && codes[j + 1] === 5 && j + 2 < codes.length) { style.fg = ANSI256[codes[j + 2]] ?? ''; j += 2 }
+      else if (c >= 90 && c <= 97) setIndexedFg(c - 90 + 8)
+      else if (c >= 100 && c <= 107) setIndexedBg(c - 100 + 8)
+      else if (c === 38 && codes[j + 1] === 5 && j + 2 < codes.length) { setIndexedFg(codes[j + 2]); j += 2 }
       else if (c === 38 && codes[j + 1] === 2 && j + 4 < codes.length) { style.fg = `rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`; j += 4 }
-      else if (c === 48 && codes[j + 1] === 5 && j + 2 < codes.length) { style.bg = ANSI256[codes[j + 2]] ?? ''; j += 2 }
+      else if (c === 48 && codes[j + 1] === 5 && j + 2 < codes.length) { setIndexedBg(codes[j + 2]); j += 2 }
       else if (c === 48 && codes[j + 1] === 2 && j + 4 < codes.length) { style.bg = `rgb(${codes[j+2]},${codes[j+3]},${codes[j+4]})`; j += 4 }
       j++
     }
@@ -956,6 +1067,7 @@ export default function Terminal({ token }: Props) {
       fontSize,
       fontFamily: 'Menlo, Monaco, "Cascadia Code", "Fira Code", monospace',
       scrollback: 10000,
+      minimumContrastRatio: MIN_TEXT_CONTRAST,
       cursorBlink: true,
       cursorInactiveStyle: 'block',
       allowProposedApi: true,
@@ -1198,7 +1310,7 @@ export default function Terminal({ token }: Props) {
               // Pre-fetch while gesture is still building up
               const wi = activeWindowIndexRef.current
               const s = activeTmuxSessionRef.current
-              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${HISTORY_FETCH_LINES}`, {
                 headers: { Authorization: `Bearer ${token}` },
               }).then(r => r.ok ? r.json() : Promise.reject(r.status))
                 .then((data: { content: string }) => {
@@ -1634,7 +1746,7 @@ export default function Terminal({ token }: Props) {
     const wi = activeWindowIndexRef.current
     const s = activeTmuxSessionRef.current
     const promise = scrollbackPrefetchRef.current ??
-      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=3000`, {
+      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${HISTORY_FETCH_LINES}`, {
         headers: { Authorization: `Bearer ${token}` },
       }).then(r => r.ok ? r.json() : Promise.reject(r.status))
 
@@ -2221,7 +2333,7 @@ export default function Terminal({ token }: Props) {
                 <pre
                   className="m-0 p-0 whitespace-pre-wrap break-all leading-tight"
                   style={{ fontFamily: termFontFamily, fontSize: termFontSize, color: termFg }}
-                  dangerouslySetInnerHTML={{ __html: ansiToHtml(scrollbackContent) }}
+                  dangerouslySetInnerHTML={{ __html: ansiToHtml(scrollbackContent, termTheme) }}
                 />
               )}
             </div>

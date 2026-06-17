@@ -102,6 +102,15 @@ function commandExists(cmd) {
 const INTERACTIVE_SHELL = commandExists('zsh') ? 'zsh' : 'bash';
 const INTERACTIVE_SHELL_CMD = `exec ${INTERACTIVE_SHELL} -i`;
 
+function positiveIntEnv(name, fallback) {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+}
+
+const SCROLLBACK_MAX_LINES = positiveIntEnv('SCROLLBACK_MAX_LINES', 50000);
+const SCROLLBACK_MAX_BUFFER = positiveIntEnv('SCROLLBACK_MAX_BUFFER', 20 * 1024 * 1024);
+const TMUX_HISTORY_LIMIT = positiveIntEnv('TMUX_HISTORY_LIMIT', SCROLLBACK_MAX_LINES);
+
 function buildInteractiveShellCmd(prefix = '') {
   return `${prefix}${INTERACTIVE_SHELL_CMD}`;
 }
@@ -898,17 +907,20 @@ app.get('/api/sessions/:id/output', authMiddleware, (req, res) => {
 app.get('/api/sessions/:id/scrollback', authMiddleware, (req, res) => {
   const windowIndex = parseInt(req.params.id, 10)
   const session = req.query.session || TMUX_SESSION
-  const lines = Math.min(parseInt(req.query.lines || '3000', 10), 10000)
+  const requested = Math.max(1, parseInt(req.query.lines || String(SCROLLBACK_MAX_LINES), 10) || SCROLLBACK_MAX_LINES)
   const target = `${session}:${windowIndex}`
 
   // Get pane height first, then capture content and dedup ghost frames
-  exec(`tmux display -p -t ${target} '#{pane_height}' 2>/dev/null`, (err, phOut) => {
-    const paneHeight = parseInt(phOut?.trim(), 10) || 50
-    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+  exec(`tmux display -p -t ${target} '#{pane_height}|#{history_size}' 2>/dev/null`, (err, paneOut) => {
+    const [heightOut, historyOut] = String(paneOut || '').trim().split('|')
+    const paneHeight = parseInt(heightOut, 10) || 50
+    const historySize = Math.max(0, parseInt(historyOut, 10) || 0)
+    const lines = Math.min(Math.max(requested, historySize), SCROLLBACK_MAX_LINES)
+    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: SCROLLBACK_MAX_BUFFER }, (err, stdout) => {
       if (err) return res.status(500).json({ error: err.message })
       const rawLines = stdout.split('\n').map(l => l.trimEnd())
       const content = dedupScrollback(rawLines, paneHeight).join('\n')
-      res.json({ content })
+      res.json({ content, requestedLines: requested, capturedLines: lines, historySize })
     })
   })
 })
@@ -2245,6 +2257,7 @@ server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`workspace: ${WORKSPACE_ROOT}`);
   // 启动时确保默认 tmux session 存在，窗口名使用 WORKSPACE_ROOT 的目录名
   try {
+    execSync(`tmux set-option -g history-limit ${TMUX_HISTORY_LIMIT} 2>/dev/null || true`);
     const defaultWindowName = WORKSPACE_ROOT.replace(/^\/+|\/+$/, '').split('/').pop() || '~'
     execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n "${defaultWindowName}" -c "${WORKSPACE_ROOT}" "${INTERACTIVE_SHELL}"`);
     console.log(`tmux session '${TMUX_SESSION}' ready`);
