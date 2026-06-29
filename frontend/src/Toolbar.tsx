@@ -6,6 +6,7 @@ import useOverlayGuard from './useOverlayGuard'
 import { Icon } from './icons'
 import type { Terminal } from '@xterm/xterm'
 import { KeyDef, ToolbarConfig, ALL_KEYS, FACTORY_CONFIG } from './toolbarDefaults'
+import { TOOLBAR_PRESETS, appendCustomKeyToSection, applyRecommendation, mergePresetWithCustom, toolbarDeviceType, type ShortcutRecommendation, type ToolbarDeviceType } from './toolbarPresets'
 import type { ThemeMode } from './Terminal'
 
 interface Props {
@@ -24,6 +25,25 @@ interface Props {
   onOpenWorkspace?: () => void
   onFitTerminal?: () => void
   onShowCopySheet?: (text: string) => void
+  composerControls?: {
+    active: boolean
+    hasDraft: boolean
+    appendEnter: boolean
+    historyOpen: boolean
+    onOpen: () => void
+    onClose: () => void
+    onToggleAppendEnter: () => void
+    onToggleHistory: () => void
+    onClear: () => void
+  }
+  attentionEntry?: {
+    count: number
+    onOpen: () => void
+  }
+  locationShare?: {
+    copied: boolean
+    onCopy: () => void
+  }
   /** When true: renders as a compact sidebar section (no theme/settings, flex-wrap key grid) */
   embedded?: boolean
   /** Controlled collapsed state (optional). If provided, component acts as controlled. */
@@ -83,6 +103,10 @@ function loadConfig(): ToolbarConfig {
   return { pinned: [...FACTORY_CONFIG.pinned], expanded: [...FACTORY_CONFIG.expanded] }
 }
 
+function configKeyFor(deviceType: ToolbarDeviceType) {
+  return `${CONFIG_KEY}_${deviceType}`
+}
+
 function loadDefault(): ToolbarConfig {
   try {
     const d = localStorage.getItem(USER_DEFAULT_KEY)
@@ -102,15 +126,17 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onFitTerminal, onShowCopySheet, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onFitTerminal, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
+  const [deviceType, setDeviceType] = useState<ToolbarDeviceType>(() => toolbarDeviceType(window.innerWidth))
+  const [recommendations, setRecommendations] = useState<ShortcutRecommendation[]>([])
   const isControlled = controlledCollapsed !== undefined
   const [collapsedInternal, setCollapsedInternal] = useState(() => {
     const saved = localStorage.getItem(COLLAPSED_KEY)
     if (saved !== null) return saved === 'true'
-    // Default: collapsed on PC (has keyboard), expanded on mobile
-    return window.innerWidth >= 1024
+    // Default: keep mobile at the three-row quick layout; expanded shortcuts are opt-in.
+    return window.innerWidth < PC_BREAKPOINT ? true : window.innerWidth >= 1024
   })
   const collapsed = isControlled ? controlledCollapsed : collapsedInternal
 
@@ -151,7 +177,9 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   // 检测 PC/移动端
   useEffect(() => {
     const checkWidth = () => {
-      setIsPC(window.innerWidth >= PC_BREAKPOINT)
+      const width = window.innerWidth
+      setIsPC(width >= PC_BREAKPOINT)
+      setDeviceType(toolbarDeviceType(width))
     }
     checkWidth()
     window.addEventListener('resize', checkWidth)
@@ -160,16 +188,25 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
 
   // 启动时从服务端拉取配置，覆盖 localStorage 缓存
   useEffect(() => {
-    fetch('/api/toolbar-config', { headers: { Authorization: `Bearer ${token}` } })
+    try {
+      const cached = localStorage.getItem(configKeyFor(deviceType))
+      if (cached) setConfig(JSON.parse(cached))
+    } catch {}
+    fetch(`/api/toolbar-config?device_type=${deviceType}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data && data.pinned && data.expanded) {
           setConfig(data)
+          localStorage.setItem(configKeyFor(deviceType), JSON.stringify(data))
           localStorage.setItem(CONFIG_KEY, JSON.stringify(data))
         }
       })
+    .catch(() => {})
+    fetch(`/api/toolbar-layouts?device_type=${deviceType}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (Array.isArray(data?.recommendations)) setRecommendations(data.recommendations) })
       .catch(() => {})
-  }, [token])
+  }, [token, deviceType])
 
   // 根元素：阻止 touchstart 默认行为，防止键盘弹出。
   // 但滚动区及其子元素（含拖拽手柄）跳过 preventDefault，
@@ -218,17 +255,43 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   }, [showPasteBox])
 
   function saveConfig(c: ToolbarConfig) {
+    localStorage.setItem(configKeyFor(deviceType), JSON.stringify(c))
     localStorage.setItem(CONFIG_KEY, JSON.stringify(c))
     fetch('/api/toolbar-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(c),
     }).catch(() => {})
+    fetch('/api/toolbar-layouts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ device_type: deviceType, name: 'Custom layout', config: c }),
+    }).catch(() => {})
   }
 
   function updateConfig(next: ToolbarConfig) { setConfig(next); saveConfig(next) }
 
+  function reportShortcutUsage(key: KeyDef) {
+    fetch('/api/shortcut-usage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ key_id: key.id, device_type: deviceType }),
+    }).catch(() => {})
+  }
+
+  function applyPreset(presetId: string) {
+    const preset = TOOLBAR_PRESETS.find(p => p.id === presetId)
+    if (!preset) return
+    updateConfig(mergePresetWithCustom(preset.config, config))
+  }
+
+  function pinRecommendation(keyId: string) {
+    updateConfig(applyRecommendation(config, keyId))
+    setRecommendations(prev => prev.filter(r => r.keyId !== keyId))
+  }
+
   async function handleKey(key: KeyDef) {
+    reportShortcutUsage(key)
     if (key.action === 'scrollToBottom') {
       scrollToBottom()
     } else if (key.action === 'pasteClipboard') {
@@ -370,7 +433,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   const [newDesc, setNewDesc] = useState('')
   const [formError, setFormError] = useState('')
 
-  function addCustomKey() {
+  function addCustomKey(section: 'pinned' | 'expanded') {
     const label = newLabel.trim()
     if (!label) { setFormError('label required'); return }
     const seq = labelToSeq(label)
@@ -383,12 +446,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
       desc: newDesc.trim() || label,
       category: 'control',
     }
-    updateConfig({
-      ...config,
-      custom: [...customKeys, keyDef],
-      // PC: add to expanded section; mobile: add to unified pinned list
-      ...(isPC ? { expanded: [...config.expanded, id] } : { pinned: [...config.pinned, id] }),
-    })
+    updateConfig(appendCustomKeyToSection(config, keyDef, section))
     setNewLabel(''); setNewDesc(''); setFormError('')
   }
 
@@ -427,27 +485,67 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
 
         {/* 列表 */}
         <div ref={editScrollRef} className={isPC ? 'overflow-y-auto flex-1 py-2' : 'overflow-y-auto flex-1'}>
-          {isPC ? (
-            /* PC: pinned + expanded 双区 */
-            (['pinned', 'expanded'] as const).map(section => (
-              <div key={section} className="mb-1">
-                <div className="text-nexus-text-2 text-xs px-5 py-2.5 pb-1.5 tracking-wide uppercase">
-                  {section === 'pinned' ? t('toolbar.fixedRow') : t('toolbar.expandSection')}
-                </div>
-                {getDisplayIds(section).map((id, idx) => {
-                  const key = KEY_MAP[id]
+          <div className={isPC ? 'px-5 py-2.5 border-b border-nexus-border' : 'px-2.5 py-2 border-b border-nexus-border'}>
+            <div className={isPC ? 'text-nexus-text-2 text-xs mb-2 tracking-wide uppercase' : 'text-nexus-text-2 text-[11px] mb-1.5 tracking-wide uppercase'}>
+              {t('toolbar.presets')}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {TOOLBAR_PRESETS.map(preset => (
+                <button
+                  key={preset.id}
+                  className={isPC ? addBtnPCClass : addBtnClass}
+                  onPointerDown={(e) => { e.preventDefault(); applyPreset(preset.id) }}
+                >
+                  {t(preset.labelKey)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {recommendations.some(r => r.recommendedAction === 'pin') && (
+            <div className={isPC ? 'px-5 py-2.5 border-b border-nexus-border' : 'px-2.5 py-2 border-b border-nexus-border'}>
+              <div className={isPC ? 'text-nexus-text-2 text-xs mb-2 tracking-wide uppercase' : 'text-nexus-text-2 text-[11px] mb-1.5 tracking-wide uppercase'}>
+                {t('toolbar.recommendations')}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {recommendations.filter(r => r.recommendedAction === 'pin').slice(0, 6).map(rec => {
+                  const key = KEY_MAP[rec.keyId]
                   if (!key) return null
-                  const isDragging = drag?.section === section && drag.toIdx === idx && drag.fromIdx !== idx
-                  const isSource   = drag?.section === section && drag.fromIdx === idx && drag.fromIdx !== drag.toIdx
                   return (
-                    <div
-                      key={id}
-                      className={[
-                        'flex items-center px-5 h-12 gap-3 border-b border-nexus-border box-border select-none',
-                        isDragging ? 'bg-[color-mix(in_srgb,var(--nexus-accent)_12%,transparent)] border-nexus-accent' : '',
-                        isSource ? 'opacity-[0.35]' : ''
-                      ].filter(Boolean).join(' ')}
+                    <button
+                      key={rec.keyId}
+                      className={isPC ? addBtnPCClass : addBtnClass}
+                      onPointerDown={(e) => { e.preventDefault(); pinRecommendation(rec.keyId) }}
+                      title={`${t(key.desc)} (${rec.useCount})`}
                     >
+                      + {key.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {(['pinned', 'expanded'] as const).map(section => (
+            <div key={section} className="mb-1">
+              <div className={isPC ? 'text-nexus-text-2 text-xs px-5 py-2.5 pb-1.5 tracking-wide uppercase' : 'text-nexus-text-2 text-[11px] px-2.5 py-1.5 pb-[3px] tracking-wide uppercase'}>
+                {section === 'pinned' ? t('toolbar.fixedRow') : t('toolbar.expandSection')}
+              </div>
+              {getDisplayIds(section).map((id, idx) => {
+                const key = KEY_MAP[id]
+                if (!key) return null
+                const isDragging = drag?.section === section && drag.toIdx === idx && drag.fromIdx !== idx
+                const isSource   = drag?.section === section && drag.fromIdx === idx && drag.fromIdx !== drag.toIdx
+                return (
+                  <div
+                    key={id}
+                    className={[
+                      isPC ? 'flex items-center px-5 h-12 gap-3 border-b border-nexus-border box-border' : 'flex items-center px-2.5 h-12 gap-2 border-b border-nexus-border box-border',
+                      isDragging ? 'bg-[color-mix(in_srgb,var(--nexus-accent)_12%,transparent)] border-nexus-accent' : '',
+                      isSource ? 'opacity-[0.35]' : ''
+                    ].filter(Boolean).join(' ')}
+                  >
+                    {/* 拖拽手柄 */}
                       <div
                         className="text-nexus-text-2 text-base cursor-grab py-2 px-1 shrink-0 touch-none flex items-center"
                         onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); onDragStart(section, idx, e.touches[0].clientY) }}
@@ -474,59 +572,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                   )
                 })}
               </div>
-            ))
-          ) : (
-            /* Mobile: 统一列表，拖放排序 */
-            (() => {
-              const ids = getDisplayIds('all')
-              return ids.length > 0 ? (
-                <div className="mb-1">
-                  <div className="text-nexus-text-2 text-[11px] px-2.5 py-1.5 pb-[3px] tracking-wide uppercase">
-                    {t('toolbar.shortcuts')}
-                  </div>
-                  {ids.map((id, idx) => {
-                    const key = KEY_MAP[id]
-                    if (!key) return null
-                    const isDragging = drag?.section === 'all' && drag.toIdx === idx && drag.fromIdx !== idx
-                    const isSource   = drag?.section === 'all' && drag.fromIdx === idx && drag.fromIdx !== drag.toIdx
-                    return (
-                      <div
-                        key={id}
-                        className={[
-                          'flex items-center px-2.5 h-12 gap-2 border-b border-nexus-border box-border select-none',
-                          isDragging ? 'bg-[color-mix(in_srgb,var(--nexus-accent)_12%,transparent)] border-nexus-accent' : '',
-                          isSource ? 'opacity-[0.35]' : ''
-                        ].filter(Boolean).join(' ')}
-                      >
-                        <div
-                          className="text-nexus-text-2 text-base cursor-grab py-2 px-1 shrink-0 touch-none flex items-center"
-                          onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); onDragStart('all', idx, e.touches[0].clientY) }}
-                          onTouchMove={(e) => { e.stopPropagation(); onDragMove(e.touches[0].clientY) }}
-                          onTouchEnd={() => onDragEnd()}
-                          onMouseDown={(e) => {
-                            e.preventDefault()
-                            isDraggingMouse.current = true
-                            onDragStart('all', idx, e.clientY)
-                          }}
-                        >
-                          <Icon name="grip" size={16} />
-                        </div>
-                        <span className="text-nexus-text font-mono text-[13px] min-w-[48px] shrink-0">{key.label}</span>
-                        <span className="text-nexus-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{t(key.desc)}</span>
-                        <button
-                          className="bg-transparent border-none text-nexus-error cursor-pointer text-lg px-0.5 shrink-0 leading-none flex items-center justify-center"
-                          onPointerDown={(e) => { e.preventDefault(); removeKey('all', id) }}
-                          title={t('toolbar.remove')}
-                        >
-                          <Icon name="x" size={14} />
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : null
-            })()
-          )}
+            ))}
 
           {/* 自定义按键 */}
           <div className="mb-1">
@@ -536,31 +582,22 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             {customKeys.map(key => {
               const inPinned = config.pinned.includes(key.id)
               const inExpanded = config.expanded.includes(key.id)
-              const inToolbar = inPinned || inExpanded
               return (
                 <div key={key.id} className={isPC ? 'flex items-center px-5 h-12 gap-3 border-b border-nexus-border box-border' : 'flex items-center px-2.5 h-12 gap-2 border-b border-nexus-border box-border'}>
                   <span className={isPC ? 'text-nexus-text font-mono text-sm min-w-[60px] shrink-0' : 'text-nexus-text font-mono text-[13px] min-w-[48px] shrink-0'}>{key.label}</span>
                   <span className={isPC ? 'text-nexus-text-2 text-xs flex-1 overflow-hidden text-ellipsis whitespace-nowrap' : 'text-nexus-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'}>{key.desc}</span>
                   <div className="flex gap-1 shrink-0">
-                    {isPC ? (
+                    {!inPinned && !inExpanded && (
                       <>
-                        {!inPinned && !inExpanded && (
-                          <>
-                            <button className={addBtnPCClass} onPointerDown={(e) => { e.preventDefault(); addKey('pinned', key.id) }}>{t('toolbar.pinToFixed')}</button>
-                            <button className={addBtnPCClass} onPointerDown={(e) => { e.preventDefault(); addKey('expanded', key.id) }}>{t('toolbar.pinToExpand')}</button>
-                          </>
-                        )}
-                        {inExpanded && (
-                          <button className={addBtnPCClass} onPointerDown={(e) => { e.preventDefault(); updateConfig({ ...config, expanded: config.expanded.filter(k => k !== key.id), pinned: [...config.pinned, key.id] }) }}>→ {t('toolbar.pinToFixed')}</button>
-                        )}
-                        {inPinned && (
-                          <button className={addBtnPCClass} onPointerDown={(e) => { e.preventDefault(); updateConfig({ ...config, pinned: config.pinned.filter(k => k !== key.id), expanded: [...config.expanded, key.id] }) }}>→ {t('toolbar.pinToExpand')}</button>
-                        )}
+                        <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('pinned', key.id) }}>{t('toolbar.pinToFixed')}</button>
+                        <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('expanded', key.id) }}>{t('toolbar.pinToExpand')}</button>
                       </>
-                    ) : (
-                      !inToolbar && (
-                        <button className={addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('all', key.id) }}>Add</button>
-                      )
+                    )}
+                    {inExpanded && (
+                      <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); updateConfig({ ...config, expanded: config.expanded.filter(k => k !== key.id), pinned: [...config.pinned, key.id] }) }}>→ {t('toolbar.pinToFixed')}</button>
+                    )}
+                    {inPinned && (
+                      <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); updateConfig({ ...config, pinned: config.pinned.filter(k => k !== key.id), expanded: [...config.expanded, key.id] }) }}>→ {t('toolbar.pinToExpand')}</button>
                     )}
                     <button
                       className={isPC ? 'bg-transparent border-none text-nexus-error cursor-pointer text-xl px-2 py-1 shrink-0 leading-none flex items-center justify-center' : 'bg-transparent border-none text-nexus-error cursor-pointer text-lg px-0.5 shrink-0 leading-none flex items-center justify-center'}
@@ -589,10 +626,16 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                   className="flex-1 min-w-0 bg-nexus-bg-2 border border-nexus-border rounded px-2 py-1.5 text-nexus-text text-sm outline-none"
                 />
                 <button
-                  onPointerDown={(e) => { e.preventDefault(); addCustomKey() }}
+                  onPointerDown={(e) => { e.preventDefault(); addCustomKey('pinned') }}
                   className="px-3 py-1.5 rounded bg-nexus-accent text-white text-sm font-medium cursor-pointer border-none shrink-0"
                 >
-                  Add
+                  {t('toolbar.pinToFixed')}
+                </button>
+                <button
+                  onPointerDown={(e) => { e.preventDefault(); addCustomKey('expanded') }}
+                  className={isPC ? addBtnPCClass : addBtnClass}
+                >
+                  {t('toolbar.pinToExpand')}
                 </button>
               </div>
               {formError && <div className="text-nexus-error text-xs">{formError}</div>}
@@ -615,14 +658,8 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                   <span className={isPC ? 'text-nexus-text font-mono text-sm min-w-[60px] shrink-0' : 'text-nexus-text font-mono text-[13px] min-w-[48px] shrink-0'}>{key.label}</span>
                   <span className={isPC ? 'text-nexus-text-2 text-xs flex-1 overflow-hidden text-ellipsis whitespace-nowrap' : 'text-nexus-text-2 text-[11px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap'}>{t(key.desc)}</span>
                   <div className="flex gap-1 ml-auto shrink-0">
-                    {isPC ? (
-                      <>
-                        <button className={addBtnPCClass} onPointerDown={(e) => { e.preventDefault(); addKey('pinned', key.id) }}>{t('toolbar.pinToFixed')}</button>
-                        <button className={addBtnPCClass} onPointerDown={(e) => { e.preventDefault(); addKey('expanded', key.id) }}>{t('toolbar.pinToExpand')}</button>
-                      </>
-                    ) : (
-                      <button className={addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('all', key.id) }}>Add</button>
-                    )}
+                    <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('pinned', key.id) }}>{t('toolbar.pinToFixed')}</button>
+                    <button className={isPC ? addBtnPCClass : addBtnClass} onPointerDown={(e) => { e.preventDefault(); addKey('expanded', key.id) }}>{t('toolbar.pinToExpand')}</button>
                   </div>
                 </div>
               ))}
@@ -825,6 +862,14 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 title={t('toolbar.fileList')}
               ><Icon name="image" size={18} /></button>
             )}
+            {locationShare && (
+              <button
+                className={iconBtnPCClass}
+                onPointerDown={(e) => { e.preventDefault(); locationShare.onCopy() }}
+                title={locationShare.copied ? t('toolbar.locationCopied') : t('toolbar.copyLocation')}
+                aria-label={locationShare.copied ? t('toolbar.locationCopied') : t('toolbar.copyLocation')}
+              ><Icon name={locationShare.copied ? 'check' : 'copy'} size={18} /></button>
+            )}
             {onOpenSettings && (
               <button
                 className={iconBtnPCClass}
@@ -912,6 +957,16 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               <Icon name="settings" size={18} />
             </button>
           )}
+          {locationShare && (
+            <button
+              className={iconBtnPCClass}
+              onPointerDown={(e) => { e.preventDefault(); locationShare.onCopy() }}
+              title={locationShare.copied ? t('toolbar.locationCopied') : t('toolbar.copyLocation')}
+              aria-label={locationShare.copied ? t('toolbar.locationCopied') : t('toolbar.copyLocation')}
+            >
+              <Icon name={locationShare.copied ? 'check' : 'copy'} size={18} />
+            </button>
+          )}
           <button className={iconBtnPCClass} onPointerDown={(e) => { e.preventDefault(); setCollapsed(v => { const n = !v; localStorage.setItem(COLLAPSED_KEY, String(n)); return n }) }} title={collapsed ? t('toolbar.expand') : t('toolbar.collapse')}>
             <Icon name={collapsed ? 'chevronUp' : 'chevronDown'} size={18} />
           </button>
@@ -943,128 +998,227 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     )
   }
 
+  const pinnedSplitIndex = Math.ceil(config.pinned.length / 2)
+  const mobilePinnedRows = [
+    config.pinned.slice(0, pinnedSplitIndex),
+    config.pinned.slice(pinnedSplitIndex),
+  ]
+
   return (
     <div ref={rootRef} className="bg-nexus-bg border-t border-nexus-border select-none shrink-0">
       {fileInputsEl}
-      <div className="flex items-center py-[3px] px-1.5 gap-1">
-        <div className="flex-1" />
-        {/* 上传按钮 - 显示自定义面板 */}
-        {onOpenWorkspace && (
-          <button
-            className={iconBtnClass}
-            onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace() }}
-            title={t('toolbar.workspace')}
-          >
-            <Icon name="folder" size={18} />
-          </button>
-        )}
-        <button
-          className={iconBtnClass}
-          onPointerDown={(e) => {
-            e.preventDefault()
-            if (!showUploadMenu) {
-              const tbH = rootRef.current?.offsetHeight ?? 56
-              setUploadMenuPos({ bottom: tbH + 4, right: 44 })
-            }
-            setShowUploadMenu(v => !v)
-          }}
-          title={t('toolbar.pasteUpload')}
-        >
-          <Icon name="paperclip" size={18} />
-        </button>
-        {showUploadMenu && createPortal(
-          <>
-            <GhostShield />
-            <div className="fixed inset-0 z-[300]" onPointerDown={() => setShowUploadMenu(false)} />
-            <div className="fixed bg-nexus-menu-bg border border-nexus-border rounded-lg py-1 min-w-[120px] z-[400] shadow-[0_-4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: uploadMenuPos.bottom, right: uploadMenuPos.right }}>
-              <button className={quickMenuItemClass} onClick={() => { setShowUploadMenu(false); fileInputRef.current?.click() }}>
-                <Icon name="image" size={16} />
-                <span>{t('toolbar.photos')}</span>
-              </button>
-              <button className={quickMenuItemClass} onClick={() => { setShowUploadMenu(false); pasteFileRef.current?.click() }}>
-                <Icon name="folder" size={16} />
-                <span>{t('toolbar.files')}</span>
-              </button>
-            </div>
-          </>,
-          document.body
-        )}
-        {/* quick menu */}
-        <div className="relative">
-          <button
-            ref={menuBtnRef}
-            className={iconBtnClass}
-            onPointerDown={(e) => {
-              e.preventDefault()
-              if (!showQuickMenu) {
-                const tbH = rootRef.current?.offsetHeight ?? 56
-                setMenuPos({ bottom: tbH + 4, right: 4 })
-              }
-              setShowQuickMenu(v => !v)
-            }}
-            title={t('toolbar.more')}
-          ><Icon name="settings" size={18} /></button>
-          {showQuickMenu && createPortal(
-            <>
-              <GhostShield />
-              <div className="fixed inset-0 z-[300]" onPointerDown={() => setShowQuickMenu(false)} />
-              <div className="fixed bg-nexus-menu-bg border border-nexus-border rounded-lg py-1 min-w-[160px] z-[400] shadow-[0_-4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: menuPos.bottom, right: menuPos.right }}>
-                <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onToggleTheme(); setShowQuickMenu(false) }}>
-                  <Icon name={themeMode === 'dark' ? 'sun' : 'moon'} size={16} />
-                  <span>{themeMode === 'dark' ? t('toolbar.switchLight') : t('toolbar.switchDark')}</span>
-                </button>
-                <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); setEditing(true); setShowQuickMenu(false) }}>
-                  <Icon name="pencil" size={16} /><span>{t('toolbar.editShortcuts')}</span>
-                </button>
-                {onOpenFiles && (
-                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenFiles(); setShowQuickMenu(false) }}>
-                    <Icon name="image" size={16} />
-                    <span>{t('toolbar.fileList')}</span>
-                  </button>
-                )}
-                {onOpenSettings && (
-                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenSettings(); setShowQuickMenu(false) }}>
-                    <Icon name="settings" size={16} />
-                    <span>{t('toolbar.settings')}</span>
-                  </button>
-                )}
-              </div>
-            </>,
-            document.body
+      <div className="flex items-center gap-1 overflow-x-auto overflow-y-hidden px-1.5 py-[3px] min-h-[36px]">
+        <div className="flex-1 min-w-0" />
+        <div className="flex items-center gap-1 w-max flex-shrink-0">
+          {onOpenWorkspace && (
+            <button
+              className={iconBtnClass}
+              onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace() }}
+              title={t('toolbar.workspace')}
+              aria-label={t('toolbar.workspace')}
+            >
+              <Icon name="folder" size={18} />
+            </button>
           )}
+          <button
+            className={iconBtnClass}
+            onPointerDown={(e) => { e.preventDefault(); setCollapsed(v => !v) }}
+            title={collapsed ? t('toolbar.expand') : t('toolbar.collapse')}
+            aria-label={collapsed ? t('toolbar.expand') : t('toolbar.collapse')}
+          >
+            <Icon name={collapsed ? 'chevronUp' : 'chevronDown'} size={18} />
+          </button>
+          {composerControls && (
+            <button
+              className={`${iconBtnClass} relative ${composerControls.active || composerControls.hasDraft ? 'text-nexus-accent bg-nexus-bg-2' : ''}`}
+              onPointerDown={(e) => { e.preventDefault(); composerControls.onOpen() }}
+              title={composerControls.hasDraft ? t('composer.openDraft') : t('composer.open')}
+              aria-label={composerControls.hasDraft ? t('composer.openDraft') : t('composer.open')}
+            >
+              <Icon name="edit" size={18} />
+              {composerControls.hasDraft && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-nexus-accent" />
+              )}
+            </button>
+          )}
+          {attentionEntry && attentionEntry.count > 0 && (
+            <button
+              className={`${iconBtnClass} relative text-nexus-error bg-red-500/10`}
+              onPointerDown={(e) => { e.preventDefault(); attentionEntry.onOpen() }}
+              title={t('attention.entryLabel', { count: attentionEntry.count })}
+              aria-label={t('attention.entryLabel', { count: attentionEntry.count })}
+            >
+              <Icon name="alert" size={18} />
+              <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-nexus-error text-white text-[10px] leading-4 text-center">
+                {attentionEntry.count > 99 ? '99+' : attentionEntry.count}
+              </span>
+            </button>
+          )}
+          {/* quick menu */}
+          <div className="relative">
+            <button
+              ref={menuBtnRef}
+              className={iconBtnClass}
+              onPointerDown={(e) => {
+                e.preventDefault()
+                if (!showQuickMenu) {
+                  const tbH = rootRef.current?.offsetHeight ?? 56
+                  setMenuPos({ bottom: tbH + 4, right: 4 })
+                }
+                setShowQuickMenu(v => !v)
+              }}
+              title={t('toolbar.more')}
+              aria-label={t('toolbar.more')}
+            ><Icon name="settings" size={18} /></button>
+            {showQuickMenu && createPortal(
+              <>
+                <GhostShield />
+                <div className="fixed inset-0 z-[300]" onPointerDown={() => setShowQuickMenu(false)} />
+                <div className="fixed bg-nexus-menu-bg border border-nexus-border rounded-lg py-1 min-w-[160px] z-[400] shadow-[0_-4px_16px_rgba(0,0,0,0.3)]" style={{ bottom: menuPos.bottom, right: menuPos.right }}>
+                  <div className="flex items-center gap-1 px-2 py-1 border-b border-nexus-border">
+                    <button
+                      className={iconBtnClass}
+                      onPointerDown={(e) => { e.preventDefault(); setCollapsed(true); setShowQuickMenu(false) }}
+                      title={t('toolbar.collapse')}
+                      aria-label={t('toolbar.collapse')}
+                    >
+                      <Icon name="chevronUp" size={16} />
+                    </button>
+                  </div>
+                  {composerControls && (
+                    <>
+                      <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); composerControls.onOpen(); setShowQuickMenu(false) }}>
+                        <Icon name="edit" size={16} />
+                        <span>{composerControls.active ? t('composer.focusComposer') : t('composer.open')}</span>
+                      </button>
+                      <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); composerControls.onClose(); setShowQuickMenu(false) }}>
+                        <Icon name="arrowDown" size={16} />
+                        <span>{t('composer.directMode')}</span>
+                      </button>
+                      <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); composerControls.onToggleAppendEnter(); setShowQuickMenu(false) }}>
+                        <Icon name={composerControls.appendEnter ? 'check' : 'x'} size={16} />
+                        <span>{t('composer.appendEnter')}</span>
+                      </button>
+                      <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); composerControls.onToggleHistory(); setShowQuickMenu(false) }}>
+                        <Icon name="history" size={16} />
+                        <span>{composerControls.historyOpen ? t('composer.hideHistory') : t('composer.history')}</span>
+                      </button>
+                      <button
+                        className={`${quickMenuItemClass} ${composerControls.hasDraft ? '' : 'opacity-45'}`}
+                        onPointerDown={(e) => {
+                          e.preventDefault()
+                          if (composerControls.hasDraft) composerControls.onClear()
+                          setShowQuickMenu(false)
+                        }}
+                      >
+                        <Icon name="trash" size={16} />
+                        <span>{t('composer.clear')}</span>
+                      </button>
+                      <div className="h-px bg-nexus-border my-1" />
+                    </>
+                  )}
+                  {onOpenWorkspace && (
+                    <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace(); setShowQuickMenu(false) }}>
+                      <Icon name="folder" size={16} />
+                      <span>{t('toolbar.workspace')}</span>
+                    </button>
+                  )}
+                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); fileInputRef.current?.click(); setShowQuickMenu(false) }}>
+                    <Icon name="image" size={16} />
+                    <span>{t('toolbar.photos')}</span>
+                  </button>
+                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); pasteFileRef.current?.click(); setShowQuickMenu(false) }}>
+                    <Icon name="folder" size={16} />
+                    <span>{t('toolbar.files')}</span>
+                  </button>
+                  {locationShare && (
+                    <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); locationShare.onCopy(); setShowQuickMenu(false) }}>
+                      <Icon name={locationShare.copied ? 'check' : 'copy'} size={16} />
+                      <span>{locationShare.copied ? t('toolbar.locationCopied') : t('toolbar.copyLocation')}</span>
+                    </button>
+                  )}
+                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onToggleTheme(); setShowQuickMenu(false) }}>
+                    <Icon name={themeMode === 'dark' ? 'sun' : 'moon'} size={16} />
+                    <span>{themeMode === 'dark' ? t('toolbar.switchLight') : t('toolbar.switchDark')}</span>
+                  </button>
+                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); setEditing(true); setShowQuickMenu(false) }}>
+                    <Icon name="pencil" size={16} /><span>{t('toolbar.editShortcuts')}</span>
+                  </button>
+                  {onOpenFiles && (
+                    <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenFiles(); setShowQuickMenu(false) }}>
+                      <Icon name="image" size={16} />
+                      <span>{t('toolbar.fileList')}</span>
+                    </button>
+                  )}
+                  {onOpenSettings && (
+                    <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenSettings(); setShowQuickMenu(false) }}>
+                      <Icon name="settings" size={16} />
+                      <span>{t('toolbar.settings')}</span>
+                    </button>
+                  )}
+                  <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); setCollapsed(v => !v); setShowQuickMenu(false) }}>
+                    <Icon name={collapsed ? 'chevronUp' : 'chevronDown'} size={16} />
+                    <span>{collapsed ? t('toolbar.expand') : t('toolbar.collapse')}</span>
+                  </button>
+                </div>
+              </>,
+              document.body
+            )}
+          </div>
         </div>
-        <button className={iconBtnClass} onPointerDown={(e) => { e.preventDefault(); setCollapsed(v => { const n = !v; localStorage.setItem(COLLAPSED_KEY, String(n)); return n }) }}>
-          <Icon name={collapsed ? 'chevronUp' : 'chevronDown'} size={18} />
-        </button>
       </div>
 
-      {(() => {
-        const ids = [...config.pinned, ...config.expanded]
-        if (ids.length === 0) return null
-        return (
+      {mobilePinnedRows.map((row, rowIndex) => (
+        <div key={rowIndex} className="overflow-x-auto overflow-y-hidden px-1 py-0.5 min-h-[34px]">
           <div
-            className="grid gap-1 px-1.5 py-0.5"
-            style={{
-              gridTemplateColumns: 'repeat(auto-fill, minmax(38px, 1fr))',
-              ...(collapsed ? { maxHeight: '34px', overflow: 'hidden' } : { paddingBottom: '0.25rem' }),
-            }}
+            className="grid gap-1"
+            style={shortcutGridStyle(row.length)}
           >
-            {ids.map(id => {
+            {row.map(id => {
               const key = KEY_MAP[id]
               if (!key) return null
               return (
                 <button
                   key={id}
-                  className={`${keyClass} w-full`}
+                  className={keyClass}
                   onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                  title={t(key.desc)}
                 >
                   {key.label}
                 </button>
               )
             })}
           </div>
-        )
-      })()}
+        </div>
+      ))}
+
+      {!collapsed && (
+        <div className="pb-1">
+          {chunk(config.expanded, 8).map((row, i) => (
+            <div key={i} className="overflow-x-auto overflow-y-hidden px-1 py-0.5">
+              <div
+                className="grid gap-1"
+                style={shortcutGridStyle(row.length)}
+              >
+                {row.map(id => {
+                  const key = KEY_MAP[id]
+                  if (!key) return null
+                  return (
+                    <button
+                      key={id}
+                      className={keyClass}
+                      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                      title={t(key.desc)}
+                    >
+                      {key.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {pasteBoxEl}
     </div>
   )
@@ -1076,8 +1230,17 @@ function chunk<T>(arr: T[], n: number): T[][] {
   return out
 }
 
+function shortcutGridStyle(count: number) {
+  const keyCount = Math.max(count, 1)
+  return {
+    gridTemplateColumns: `repeat(${keyCount}, minmax(34px, 1fr))`,
+    width: '80%',
+    minWidth: `${keyCount * 38}px`,
+  }
+}
+
 // Tailwind class constants for reuse
-const keyClass = 'bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text cursor-pointer text-xs font-mono min-w-[38px] py-1.5 px-[7px] text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-nexus-bg active:border-nexus-accent'
+const keyClass = 'bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text cursor-pointer text-xs font-mono min-w-[34px] py-1.5 px-1.5 text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-nexus-bg active:border-nexus-accent'
 const keyPCClass = 'bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text cursor-pointer text-sm font-mono min-w-[48px] py-2 px-2.5 text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-nexus-bg active:border-nexus-accent'
 const keyEmbeddedClass = 'bg-nexus-bg-2 border border-nexus-border rounded text-nexus-text cursor-pointer text-[11px] font-mono min-w-[30px] py-1 px-[5px] text-center touch-manipulation flex-shrink-0 transition-all duration-100 active:scale-95 active:bg-nexus-bg active:border-nexus-accent'
 const iconBtnClass = 'bg-transparent border-none text-nexus-text-2 cursor-pointer text-sm py-1 px-2 rounded flex items-center justify-center transition-all duration-100 active:scale-90 active:text-nexus-text active:bg-nexus-bg-2'

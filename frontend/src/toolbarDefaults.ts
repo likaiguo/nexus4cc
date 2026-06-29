@@ -66,24 +66,18 @@ export const ALL_KEYS: KeyDef[] = [
   { id: 'fit',        label: 'Fit',   seq: '',         desc: 'toolbarKeys.fitTerminal', action: 'fit', category: 'ui' },
 ]
 
-// Reorganized factory defaults by priority and category grouping
+// Legacy fixed-row defaults. Keep this order stable unless the user manually
+// reorders the toolbar.
 export const FACTORY_PINNED = [
-  // Control
-  'esc', 
-  // Navigation
-   'ctrl-a', 'left', 'up', 'down', 'right', 'ctrl-e',
-  'backspace', 
-  // Input — \ / adjacent
-  'backslash', 'slash',
-  // Clipboard
-  'ctrl-c', 'ctrl-v',  'enter', 'tab',
+  'esc', 'ctrl-a', 'left', 'up', 'down', 'right', 'ctrl-e', 'backspace',
+  'backslash', 'slash', 'ctrl-c', 'ctrl-v', 'enter', 'tab',
 ]
 
 export const FACTORY_EXPANDED = [
   // Navigation group
-  'alt-b', 'alt-f',  
+  'alt-b', 'alt-f',
   // Editing group
-  'ctrl-d', 'ctrl-u', 'ctrl-j', 'ctrl-k', 'ctrl-l', 'ctrl-y', 'ctrl-z', 
+  'ctrl-d', 'ctrl-u', 'ctrl-j', 'ctrl-k', 'ctrl-l', 'ctrl-y', 'ctrl-z',
   // Control group
   'ctrl-r', 'ctrl-b', 'ctrl-o', 'ctrl-t', 'ctrl-f', 'ctrl-g',
   // Input group

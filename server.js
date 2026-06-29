@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlink
 import { readdir, stat as statAsync } from 'fs/promises';
 import https from 'node:https';
 import multer from 'multer';
+import { createNexusStore } from './storage.js';
 
 // 加载 .env 文件（如果存在）
 try {
@@ -34,9 +35,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, 'data');
 const TOOLBAR_CONFIG_FILE = join(DATA_DIR, 'toolbar-config.json');
 const CONFIGS_DIR = join(DATA_DIR, 'configs');
-
+const TASKS_FILE = join(DATA_DIR, 'tasks.json');
+const MAX_TASKS = 200;
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
+
+const nexusStore = createNexusStore({
+  dataDir: DATA_DIR,
+  toolbarConfigFile: TOOLBAR_CONFIG_FILE,
+  tasksFile: TASKS_FILE,
+  maxTasks: MAX_TASKS,
+  logger: console,
+});
 
 // 自动确保 anthropic.json 存在（无需用户手动创建）
 // 优先级：已有文件不覆盖；API_KEY 从环境变量 ANTHROPIC_API_KEY 检测
@@ -107,9 +117,35 @@ function positiveIntEnv(name, fallback) {
 const SCROLLBACK_MAX_LINES = positiveIntEnv('SCROLLBACK_MAX_LINES', 50000);
 const SCROLLBACK_MAX_BUFFER = positiveIntEnv('SCROLLBACK_MAX_BUFFER', 20 * 1024 * 1024);
 const TMUX_HISTORY_LIMIT = positiveIntEnv('TMUX_HISTORY_LIMIT', SCROLLBACK_MAX_LINES);
+const ATTENTION_SUMMARY_LIMIT = 500;
 
 function buildInteractiveShellCmd(prefix = '') {
   return `${prefix}${INTERACTIVE_SHELL_CMD}`;
+}
+
+function shortAttentionSummary(text, limit = ATTENTION_SUMMARY_LIMIT) {
+  return String(text || '')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(Boolean)
+    .slice(-8)
+    .join('\n')
+    .slice(-limit)
+}
+
+function recordAttentionEvent(event) {
+  if (!nexusStore) return null
+  try {
+    return nexusStore.upsertAttentionEvent({
+      ...event,
+      summary: shortAttentionSummary(event.summary),
+    })
+  } catch (err) {
+    console.warn('[Nexus] attention event write failed:', err.message)
+    return null
+  }
 }
 
 // 静态文件：frontend/dist 和 public
@@ -142,6 +178,167 @@ app.post('/api/auth/login', async (req, res) => {
     res.status(500).json({ error: 'internal error' });
   }
 });
+
+// GET /api/settings — 单用户偏好设置
+app.get('/api/settings', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.getSettings())
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PATCH /api/settings — 更新单用户偏好设置
+app.patch('/api/settings', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const settings = nexusStore.updateSettings(req.body || {})
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'inputHistoryRetentionDays')) {
+      nexusStore.cleanupInputHistory(settings.inputHistoryRetentionDays)
+    }
+    res.json(settings)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/input-history — 清空本地输入历史（不影响 tmux scrollback）
+app.delete('/api/input-history', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const deleted = req.query.id ? nexusStore.deleteInputHistory(req.query.id) : nexusStore.clearInputHistory()
+    res.json({ ok: true, deleted })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/input-history — 查询 Composer 输入历史
+app.get('/api/input-history', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.listInputHistory({
+      project: req.query.project || '',
+      channelIndex: req.query.channel,
+      limit: req.query.limit,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/input-history — 保存明确提交的 Composer 输入
+app.post('/api/input-history', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const item = nexusStore.addInputHistory({
+      project: req.body?.project || '',
+      channelIndex: req.body?.channelIndex ?? req.body?.channel_index ?? 0,
+      text: req.body?.text || '',
+    })
+    res.json({ ok: true, item })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/composer-drafts — 读取项目/频道草稿
+app.get('/api/composer-drafts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.getComposerDraft({
+      project: req.query.project || '',
+      channelIndex: req.query.channel,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/composer-drafts — 保存项目/频道草稿
+app.put('/api/composer-drafts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.saveComposerDraft({
+      project: req.body?.project || '',
+      channelIndex: req.body?.channelIndex ?? req.body?.channel_index ?? 0,
+      text: req.body?.text || '',
+      cursorPos: req.body?.cursorPos ?? req.body?.cursor_pos ?? 0,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/composer-drafts — 清除项目/频道草稿
+app.delete('/api/composer-drafts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const deleted = nexusStore.clearComposerDraft({
+      project: req.query.project || req.body?.project || '',
+      channelIndex: req.query.channel ?? req.body?.channelIndex ?? req.body?.channel_index ?? 0,
+    })
+    res.json({ ok: true, deleted })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/attention-events — 查询未处理/全部注意力事件
+app.get('/api/attention-events', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.listAttentionEvents({
+      status: req.query.status || 'unresolved',
+      project: req.query.project,
+      channelIndex: req.query.channel,
+      limit: req.query.limit,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/attention-events/count — 未处理事件计数
+app.get('/api/attention-events/count', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json({ count: nexusStore.countAttentionEvents({ status: req.query.status || 'unresolved' }) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PATCH /api/attention-events/:id — 更新事件状态（seen/resolved/dismissed）
+app.patch('/api/attention-events/:id', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const status = req.body?.status
+    if (!status) return res.status(400).json({ error: 'status required' })
+    res.json(nexusStore.updateAttentionEventStatus(req.params.id, status))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/attention-events/:id/resolve', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.updateAttentionEventStatus(req.params.id, 'resolved'))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/attention-events/:id/dismiss', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.updateAttentionEventStatus(req.params.id, 'dismissed'))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
 
 // POST /api/windows — F-19: 项目-窗口两级结构
 // body: { rel_path?, shell_type?, profile? }
@@ -325,6 +522,14 @@ app.delete('/api/configs/:id', authMiddleware, (req, res) => {
 // GET /api/toolbar-config — 读取工具栏配置
 app.get('/api/toolbar-config', authMiddleware, (req, res) => {
   try {
+    if (nexusStore) {
+      try {
+        const stored = nexusStore.getToolbarConfig(req.query.device_type || 'legacy');
+        if (stored) return res.json(stored);
+      } catch (err) {
+        console.warn('[Nexus] SQLite toolbar read failed; falling back to toolbar-config.json:', err.message);
+      }
+    }
     if (!existsSync(TOOLBAR_CONFIG_FILE)) return res.json(null);
     const data = readFileSync(TOOLBAR_CONFIG_FILE, 'utf8');
     res.json(JSON.parse(data));
@@ -336,12 +541,60 @@ app.get('/api/toolbar-config', authMiddleware, (req, res) => {
 // POST /api/toolbar-config — 保存工具栏配置
 app.post('/api/toolbar-config', authMiddleware, (req, res) => {
   try {
+    if (nexusStore) {
+      try {
+        nexusStore.saveToolbarConfig(req.body, req.query.device_type || 'legacy');
+      } catch (err) {
+        console.warn('[Nexus] SQLite toolbar write failed; still writing toolbar-config.json:', err.message);
+      }
+    }
     writeFileSync(TOOLBAR_CONFIG_FILE, JSON.stringify(req.body), 'utf8');
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// GET /api/toolbar-layouts — 按设备类型列出工具栏布局
+app.get('/api/toolbar-layouts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const deviceType = req.query.device_type || 'legacy'
+    res.json({
+      deviceType,
+      layouts: nexusStore.listToolbarLayouts(deviceType),
+      recommendations: nexusStore.getShortcutRecommendations(deviceType),
+    })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// POST /api/toolbar-layouts — 保存当前设备类型 active layout
+app.post('/api/toolbar-layouts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const { device_type = 'legacy', name = 'Custom layout', config } = req.body || {}
+    const saved = nexusStore.saveToolbarConfig(config || req.body, device_type, name)
+    res.json({ ok: true, config: saved })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// POST /api/shortcut-usage — 记录快捷键使用统计（不记录输入内容）
+app.post('/api/shortcut-usage', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const usage = nexusStore.recordShortcutUsage({
+      keyId: req.body?.key_id || req.body?.keyId,
+      deviceType: req.body?.device_type || req.body?.deviceType || 'legacy',
+    })
+    res.json({ ok: true, usage })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
 
 // GET /api/version — 当前版本号及工作区状态
 app.get('/api/version', authMiddleware, (req, res) => {
@@ -1463,6 +1716,457 @@ app.post('/api/sessions/:id/attach', authMiddleware, (req, res) => {
   })
 })
 
+// ---- Tasks API (F-13: claude -p 非交互派发) ----
+
+function loadTasks() {
+  if (nexusStore) {
+    try {
+      return nexusStore.listTasks(MAX_TASKS)
+    } catch (err) {
+      console.warn('[Nexus] SQLite task read failed; falling back to tasks.json:', err.message)
+    }
+  }
+  try {
+    if (existsSync(TASKS_FILE)) {
+      return JSON.parse(readFileSync(TASKS_FILE, 'utf8'))
+    }
+  } catch {}
+  return []
+}
+
+function saveTasks(tasks) {
+  // 保留最新的 MAX_TASKS 条，防止文件无限增长
+  const trimmed = tasks.length > MAX_TASKS ? tasks.slice(-MAX_TASKS) : tasks
+  if (nexusStore) {
+    try {
+      nexusStore.replaceTasks(trimmed, MAX_TASKS)
+    } catch (err) {
+      console.warn('[Nexus] SQLite task write failed; still writing tasks.json:', err.message)
+    }
+  }
+  writeFileSync(TASKS_FILE, JSON.stringify(trimmed, null, 2))
+}
+
+function updateTask(id, updates) {
+  const tasks = loadTasks()
+  const idx = tasks.findIndex(t => t.id === id)
+  if (idx !== -1) {
+    Object.assign(tasks[idx], updates)
+    saveTasks(tasks)
+  }
+}
+
+/**
+ * F-17: 统一任务执行入口 — spawn claude -p, 管理任务记录, 回调给各渠道
+ * @param {string} prompt
+ * @param {string} cwd
+ * @param {{ sessionName?: string, source?: string, tmuxSession?: string, profile?: string, onChunk?: (chunk:string,isErr:boolean)=>void, onDone?: (result:object)=>void }} opts
+ * @returns {string} taskId
+ */
+function runTask(prompt, cwd, opts = {}) {
+  const { sessionName, source = 'web', tmuxSession, profile, onChunk, onDone } = opts
+  const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const createdAt = new Date().toISOString()
+
+  const taskRecord = {
+    id: taskId,
+    session_name: sessionName || '',
+    prompt: prompt.slice(0, 1000),
+    status: 'running',
+    output: '',
+    error: '',
+    createdAt,
+    source,
+    ...(tmuxSession && tmuxSession !== TMUX_SESSION ? { tmux_session: tmuxSession } : {}),
+  }
+  const allTasks = loadTasks()
+  allTasks.push(taskRecord)
+  saveTasks(allTasks)
+
+  const proxyEnv = CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY } : {}
+  const claudeArgs = ['-p', prompt, '--dangerously-skip-permissions']
+  if (profile) claudeArgs.push('--profile', profile)
+  const child = spawn('claude', claudeArgs, {
+    cwd,
+    env: { ...process.env, ...proxyEnv },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  let output = ''
+  let errorOutput = ''
+
+  child.stdout.on('data', (data) => {
+    const chunk = data.toString()
+    output += chunk
+    onChunk?.(chunk, false)
+  })
+  child.stderr.on('data', (data) => {
+    const chunk = data.toString()
+    errorOutput += chunk
+    onChunk?.(chunk, true)
+  })
+
+  child.on('close', (code) => {
+    const status = code === 0 ? 'success' : 'error'
+    const summary = shortAttentionSummary(status === 'success' ? output : (errorOutput || output))
+    updateTask(taskId, {
+      status,
+      output: output.slice(-10000),
+      error: errorOutput.slice(-1000),
+      completedAt: new Date().toISOString(),
+      exitCode: code,
+    })
+    recordAttentionEvent({
+      type: status === 'success' ? 'task-success' : 'task-error',
+      project: tmuxSession || TMUX_SESSION,
+      channelIndex: null,
+      taskId,
+      summary: summary || `${status} (exit ${code ?? 'unknown'})`,
+      metadata: {
+        source,
+        sessionName: sessionName || '',
+        exitCode: code,
+      },
+    })
+    onDone?.({ taskId, status, output, errorOutput, exitCode: code })
+  })
+
+  return { taskId, kill: () => { if (!child.killed) child.kill() } }
+}
+
+// GET /api/tasks — 获取任务历史
+app.get('/api/tasks', authMiddleware, (req, res) => {
+  const tasks = loadTasks()
+  res.json(tasks.slice(-50).reverse()) // 最近50条，倒序
+})
+
+// DELETE /api/tasks/:id — 删除单条任务记录
+app.delete('/api/tasks/:id', authMiddleware, (req, res) => {
+  const tasks = loadTasks()
+  const filtered = tasks.filter(t => t.id !== req.params.id)
+  saveTasks(filtered)
+  res.json({ ok: true })
+})
+
+// POST /api/tasks — 创建新任务，SSE 流式返回
+app.post('/api/tasks', authMiddleware, (req, res) => {
+  const { session_name, prompt, profile, tmux_session } = req.body || {}
+  if (!prompt) return res.status(400).json({ error: 'prompt required' })
+
+  // 找到 session 对应的 cwd
+  let cwd = WORKSPACE_ROOT
+  const targetSession = tmux_session || TMUX_SESSION
+  try {
+    const windows = execSync(`tmux list-windows -t ${targetSession} -F "#I:#W:#{pane_current_path}"`).toString().trim().split('\n')
+    for (const line of windows) {
+      const parts = line.split(':')
+      const name = parts[1]
+      const path = parts.slice(2).join(':')
+      if (name === session_name && path) { cwd = path; break }
+    }
+  } catch {}
+
+  // 设置 SSE headers
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+
+  const createdAt = new Date().toISOString()
+  const { taskId, kill } = runTask(prompt, cwd, {
+    sessionName: session_name,
+    source: 'web',
+    tmuxSession: targetSession,
+    profile,
+    onChunk: (chunk, isErr) => {
+      const ev = isErr ? 'error' : 'output'
+      res.write(`event: ${ev}\ndata: ${JSON.stringify({ chunk })}\n\n`)
+    },
+    onDone: ({ taskId: tid, status, exitCode }) => {
+      res.write(`event: done\ndata: ${JSON.stringify({ taskId: tid, status, exitCode })}\n\n`)
+      res.end()
+    },
+  })
+
+  res.write(`event: start\ndata: ${JSON.stringify({ taskId, session_name, prompt, createdAt })}\n\n`)
+  req.on('close', kill)
+})
+
+
+// ---- Telegram Bot Webhook (F-16) ----
+
+function telegramRequest(method, payload) {
+  if (!TELEGRAM_BOT_TOKEN) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const body = JSON.stringify(payload)
+    const options = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }
+    const req = https.request(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`,
+      options,
+      (res) => {
+        let data = ''
+        res.on('data', d => data += d)
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)) } catch { resolve(null) }
+        })
+      }
+    )
+    req.on('error', (e) => { console.error(`Telegram ${method} error:`, e.message); resolve(null) })
+    req.write(body)
+    req.end()
+  })
+}
+
+// Returns the sent message_id (or null)
+async function telegramSend(chatId, text) {
+  const result = await telegramRequest('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown' })
+  return result?.result?.message_id ?? null
+}
+
+// Edit an existing message in-place (silently ignores errors)
+function telegramEdit(chatId, messageId, text) {
+  if (!messageId) return
+  telegramRequest('editMessageText', { chat_id: chatId, message_id: messageId, text, parse_mode: 'Markdown' })
+}
+
+// 下载 Telegram 文件到指定目录
+function downloadTelegramFile(fileId, destDir, filename) {
+  return new Promise((resolve, reject) => {
+    // 1. 获取 file_path
+    const infoUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`
+    https.get(infoUrl, (res) => {
+      let data = ''
+      res.on('data', d => data += d)
+      res.on('end', () => {
+        try {
+          const info = JSON.parse(data)
+          if (!info.ok) return reject(new Error('getFile failed: ' + info.description))
+          const filePath = info.result.file_path
+          const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`
+
+          // 2. 下载文件
+          https.get(fileUrl, (fres) => {
+            const chunks = []
+            fres.on('data', c => chunks.push(c))
+            fres.on('end', () => {
+              const buf = Buffer.concat(chunks)
+              const destPath = join(destDir, filename)
+              writeFileSync(destPath, buf)
+              resolve({ path: destPath, size: buf.length })
+            })
+            fres.on('error', reject)
+          }).on('error', reject)
+        } catch (e) { reject(e) }
+      })
+    }).on('error', reject)
+  })
+}
+
+// POST /api/webhooks/telegram — Telegram Bot webhook
+app.post('/api/webhooks/telegram', (req, res) => {
+  // 验证 secret（如果配置了）
+  if (TELEGRAM_WEBHOOK_SECRET) {
+    const secret = req.headers['x-telegram-bot-api-secret-token']
+    if (secret !== TELEGRAM_WEBHOOK_SECRET) {
+      return res.status(403).json({ error: 'forbidden' })
+    }
+  }
+
+  if (!TELEGRAM_BOT_TOKEN) return res.status(503).json({ error: 'Telegram not configured' })
+
+  const update = req.body
+  res.json({ ok: true }) // 立即返回，避免 Telegram 重试
+
+  const message = update.message || update.edited_message
+  if (!message) return
+
+  const chatId = message.chat.id
+
+  // /start 欢迎消息
+  if (message.text?.trim() === '/start') {
+    telegramSend(chatId, '👋 *Nexus Bot* 已就绪\n\n发送任意文字，我会用 `claude -p` 在你的服务器上执行并回复结果。\n\n发送图片或文件，我会保存到当前 session 目录。\n\n`/sessions` — 查看 tmux 窗口列表\n`/switch <编号>` — 切换目标窗口')
+    return
+  }
+
+  // /sessions 列出当前窗口
+  if (message.text?.trim() === '/sessions') {
+    exec(`tmux list-windows -t ${TMUX_SESSION} -F "#{window_index}|#{window_name}|#{window_active}"`, (err, stdout) => {
+      if (err) {
+        telegramSend(chatId, '❌ 无法获取会话列表: ' + err.message)
+        return
+      }
+      const lines = stdout.trim().split('\n').filter(Boolean).map(line => {
+        const [idx, name, active] = line.split('|')
+        return `${active?.trim() === '1' ? '▶' : '  '} \`${idx}: ${name}\``
+      })
+      telegramSend(chatId, '*当前 tmux 窗口:*\n' + lines.join('\n') + '\n\n用 `/switch <编号>` 切换')
+    })
+    return
+  }
+
+  // /switch <index|name> — 切换 active tmux 窗口
+  if (message.text?.trim().startsWith('/switch ')) {
+    const raw = message.text.trim().slice('/switch '.length).trim()
+    const target = raw.replace(/[^a-zA-Z0-9_\-]/g, '') // 只允许安全字符
+    if (!target) {
+      telegramSend(chatId, '❌ 无效的窗口名称，只允许字母/数字/下划线/连字符')
+      return
+    }
+    exec(`tmux select-window -t ${TMUX_SESSION}:${target}`, (err) => {
+      if (err) {
+        telegramSend(chatId, `❌ 无法切换到窗口 \`${target}\`: ${err.message}`)
+      } else {
+        telegramSend(chatId, `✅ 已切换到窗口 \`${target}\`\n\n后续任务将在此窗口执行。`)
+      }
+    })
+    return
+  }
+
+  // 执行 claude -p，Telegram 渠道：增量进度推送
+  async function runClaudePrompt(prompt, cwd, sessionName) {
+    const msgId = await telegramSend(chatId, `⏳ *执行中*（session: \`${sessionName || 'default'}\`）\n\n_等待输出..._`)
+
+    let currentOutput = ''
+    let currentError = ''
+    let currentTaskId = null
+
+    const progressInterval = setInterval(() => {
+      const preview = (currentOutput || currentError).trim()
+      if (preview) {
+        if (msgId) {
+          const truncated = preview.length > 3000 ? '…' + preview.slice(-3000) : preview
+          telegramEdit(chatId, msgId, `⏳ *执行中*（session: \`${sessionName || 'default'}\`）\n\`\`\`\n${truncated}\n\`\`\``)
+        }
+        // 更新任务记录，让 Web TaskPanel 可见中间输出
+        if (currentTaskId) updateTask(currentTaskId, { output: currentOutput.slice(-10000), error: currentError.slice(-1000) })
+      }
+    }, 5000)
+
+    const { taskId } = runTask(prompt, cwd, {
+      sessionName: sessionName || 'telegram',
+      source: 'telegram',
+      onChunk: (chunk, isErr) => {
+        if (isErr) currentError += chunk; else currentOutput += chunk
+      },
+      onDone: ({ exitCode }) => {
+        clearInterval(progressInterval)
+        const result = currentOutput.trim() || currentError.trim() || '(无输出)'
+        const truncated = result.length > 3800 ? result.slice(0, 3800) + '\n\n…(输出已截断)' : result
+        const status = exitCode === 0 ? '✅' : '❌'
+        if (msgId) {
+          telegramEdit(chatId, msgId, `${status} *执行完成*（session: \`${sessionName || 'default'}\`）\n\`\`\`\n${truncated}\n\`\`\``)
+        } else {
+          telegramSend(chatId, `${status} *执行完成*\n\`\`\`\n${truncated}\n\`\`\``)
+        }
+      },
+    })
+    currentTaskId = taskId
+  }
+
+  // 处理文件/图片上传
+  if (message.photo || message.document) {
+    (async () => {
+      try {
+        // 确定目标目录
+        let cwd = WORKSPACE_ROOT
+        try {
+          const activeLines = execSync(`tmux list-windows -t ${TMUX_SESSION} -F "#I:#W:#{pane_current_path}:#{window_active}"`).toString().trim().split('\n')
+          for (const line of activeLines) {
+            const parts = line.split(':')
+            if (parts[parts.length - 1]?.trim() === '1') {
+              cwd = parts.slice(2, parts.length - 1).join(':')
+              break
+            }
+          }
+        } catch {}
+
+        let fileId, filename
+        if (message.photo) {
+          const photo = message.photo[message.photo.length - 1]
+          fileId = photo.file_id
+          filename = `tg_photo_${Date.now()}.jpg`
+        } else {
+          fileId = message.document.file_id
+          filename = message.document.file_name || `tg_file_${Date.now()}`
+        }
+
+        telegramSend(chatId, `⬇️ 正在下载文件到 \`${cwd}\`...`)
+        const result = await downloadTelegramFile(fileId, cwd, filename)
+        telegramSend(chatId, `✅ 文件已保存\n\`\`\`\n${result.path}\n\`\`\`\n大小: ${(result.size / 1024).toFixed(1)} KB`)
+
+        // 如果有 caption，把 caption 作为 prompt 执行
+        if (message.caption?.trim()) {
+          const caption = message.caption.trim()
+          runClaudePrompt(caption, cwd, 'telegram').catch(e => console.error('runClaudePrompt error:', e))
+        }
+      } catch (e) {
+        telegramSend(chatId, '❌ 文件处理失败: ' + (e.message || String(e)))
+      }
+    })()
+    return
+  }
+
+  // 普通 prompt
+  const text = message.text?.trim()
+  if (!text) return
+  let cwd = WORKSPACE_ROOT
+  let sessionName = TELEGRAM_DEFAULT_SESSION
+
+  try {
+    const windows = execSync(`tmux list-windows -t ${TMUX_SESSION} -F "#I:#W:#{pane_current_path}"`).toString().trim().split('\n')
+    // 优先用默认 session，否则用 active window
+    for (const line of windows) {
+      const parts = line.split(':')
+      const idx = parts[0]
+      const name = parts[1]
+      const path = parts.slice(2).join(':')
+      if (TELEGRAM_DEFAULT_SESSION && name === TELEGRAM_DEFAULT_SESSION) {
+        cwd = path
+        sessionName = name
+        break
+      }
+    }
+    // 如果没找到默认 session，用 active window
+    if (!sessionName) {
+      const activeLines = execSync(`tmux list-windows -t ${TMUX_SESSION} -F "#I:#W:#{pane_current_path}:#{window_active}"`).toString().trim().split('\n')
+      for (const line of activeLines) {
+        const parts = line.split(':')
+        const active = parts[parts.length - 1]
+        if (active?.trim() === '1') {
+          sessionName = parts[1]
+          cwd = parts.slice(2, parts.length - 1).join(':')
+          break
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  runClaudePrompt(text, cwd, sessionName).catch(e => console.error('runClaudePrompt error:', e))
+})
+
+// GET /api/telegram/setup — 一键配置 Telegram webhook URL
+app.get('/api/telegram/setup', authMiddleware, (req, res) => {
+  if (!TELEGRAM_BOT_TOKEN) return res.status(503).json({ error: 'TELEGRAM_BOT_TOKEN not set' })
+  const webhookUrl = `${req.protocol}://${req.get('host')}/api/webhooks/telegram`
+  const secretParam = TELEGRAM_WEBHOOK_SECRET ? `&secret_token=${TELEGRAM_WEBHOOK_SECRET}` : ''
+  const setupUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${encodeURIComponent(webhookUrl)}${secretParam}`
+
+  // 调用 Telegram API 设置 webhook
+  https.get(setupUrl, (r) => {
+    let data = ''
+    r.on('data', d => data += d)
+    r.on('end', () => {
+      try {
+        res.json({ webhookUrl, telegramResponse: JSON.parse(data) })
+      } catch {
+        res.json({ webhookUrl, raw: data })
+      }
+    })
+  }).on('error', (e) => res.status(500).json({ error: e.message }))
+})
+
 // SPA fallback — 所有非 API 路由返回 index.html
 app.get('*', (req, res) => {
   const indexPath = join(__dirname, 'frontend', 'dist', 'index.html');
@@ -1678,6 +2382,12 @@ try {
   if (changed) saveTasks(staleTasks)
 } catch {}
 
+try {
+  if (nexusStore) nexusStore.cleanupInputHistory()
+} catch (err) {
+  console.warn('[Nexus] Input history cleanup failed:', err.message)
+}
+
 // ---- Channel attention state (F: channel-status-markers) ----
 // Poll every tmux window across every session, classify each into a status,
 // and remember the sticky "needs-confirm" / "done" states until the user
@@ -1766,9 +2476,23 @@ async function attnUpdateChannel(session, index, now) {
   // Sticky transitions (only set here; cleared on "seen").
   if (attnDetectNeedsConfirm(sample)) {
     st.sticky = 'needs-confirm'
+    recordAttentionEvent({
+      type: 'needs-confirm',
+      project: session,
+      channelIndex: index,
+      summary: attnLastNonEmptyLine(sample) || sample,
+      metadata: { source: 'channel-attention' },
+    })
   } else if (st.wasActive && idle && !isShell && st.sticky !== 'needs-confirm') {
     // Falling edge active -> idle with non-shell tail == session finished.
     st.sticky = 'done'
+    recordAttentionEvent({
+      type: 'done',
+      project: session,
+      channelIndex: index,
+      summary: attnLastNonEmptyLine(sample) || sample,
+      metadata: { source: 'channel-attention' },
+    })
   }
   st.wasActive = isActive
 }
@@ -1787,6 +2511,13 @@ function attnReportedStatus(session, index) {
 function attnClear(session, index) {
   const st = channelAttention.get(ptyKey(session, index))
   if (st) { st.sticky = null; st.wasActive = false }
+  if (nexusStore) {
+    try {
+      nexusStore.markAttentionSeen({ project: session, channelIndex: index })
+    } catch (err) {
+      console.warn('[Nexus] attention event seen update failed:', err.message)
+    }
+  }
 }
 
 // Async list helper — never blocks the event loop.

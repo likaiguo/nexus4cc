@@ -12,6 +12,13 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import {
+  buildProjectChannelUrl,
+  normalizeChannelIndex,
+  parseProjectChannelLocation,
+  replaceProjectChannelUrl,
+  type ProjectChannelLocation,
+} from './shareableLocation'
 
 // ANSI 256-color palette (0-15 standard, 16-231 6x6x6 cube, 232-255 grayscale)
 const ANSI256: string[] = (() => {
@@ -213,6 +220,7 @@ const NewWindowDialog = lazy(() => import('./NewWindowDialog'))
 const FilePanel = lazy(() => import('./FilePanel'))
 const WorkspaceBrowser = lazy(() => import('./WorkspaceBrowser'))
 const GeneralSettings = lazy(() => import('./GeneralSettings'))
+const AttentionCenter = lazy(() => import('./AttentionCenter'))
 
 interface TmuxWindow {
   index: number
@@ -224,11 +232,33 @@ interface Props {
   token: string
 }
 
+type ComposerMode = 'direct' | 'composer'
+
+interface InputHistoryItem {
+  id: string
+  project: string
+  channelIndex: number
+  text: string
+  createdAt: string
+  usedAt: string
+}
+
 const FONT_SIZE_KEY = 'nexus_font_size'
 const THEME_KEY = 'nexus_theme'
 const WINDOW_KEY = 'nexus_window'
 const TAP_THRESHOLD = 8
 const MAX_UPLOAD_NOTIFICATIONS = 5
+
+function cursorInfo(text: string, cursorPos: number) {
+  const pos = Math.max(0, Math.min(cursorPos, text.length))
+  const before = text.slice(0, pos)
+  const lines = before.split('\n')
+  return {
+    line: lines.length,
+    column: (lines[lines.length - 1] ?? '').length + 1,
+    pos,
+  }
+}
 
 export type ThemeMode = 'dark' | 'light'
 
@@ -287,6 +317,23 @@ export const THEMES: Record<ThemeMode, ITheme> = {
   light: LIGHT_THEME,
 }
 
+function initialUrlRequest(): ProjectChannelLocation {
+  if (typeof window === 'undefined') {
+    return { project: null, channel: null, hasProject: false, hasChannel: false, channelMalformed: false }
+  }
+  return parseProjectChannelLocation(window.location.href)
+}
+
+function initialChannelIndex(urlRequest: ProjectChannelLocation): number {
+  if (urlRequest.channel !== null) return urlRequest.channel
+  return normalizeChannelIndex(localStorage.getItem(WINDOW_KEY) || '0')
+}
+
+function initialProjectName(urlRequest: ProjectChannelLocation): string {
+  if (urlRequest.project) return urlRequest.project
+  return localStorage.getItem('nexus_session') || '~'
+}
+
 export function getInitialTheme(): ThemeMode {
   const saved = localStorage.getItem(THEME_KEY)
   if (saved === 'light' || saved === 'dark') return saved
@@ -315,6 +362,10 @@ applyNexusCssVars(getInitialTheme())
 // Agent 状态推断（F-15）
 export default function Terminal({ token }: Props) {
   const { t } = useTranslation()
+  const initialLocationRef = useRef<ProjectChannelLocation | null>(null)
+  if (initialLocationRef.current === null) initialLocationRef.current = initialUrlRequest()
+  const initialLocation = initialLocationRef.current
+  const urlRestoreDoneRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -322,11 +373,23 @@ export default function Terminal({ token }: Props) {
   const userScrolledRef = useRef(false)
   const lastContainerSizeRef = useRef({ w: 0, h: 0 })
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerWrapRef = useRef<HTMLDivElement>(null)
+  const composerSaveTimerRef = useRef<number | null>(null)
+  const composerModeRef = useRef<ComposerMode>('direct')
+  const composerImeRef = useRef(false)
+  const composerScopeRef = useRef<{ project: string; channelIndex: number } | null>(null)
+  const composerDraftRef = useRef('')
+  const composerCursorRef = useRef(0)
+  const composerDraftDirtyRef = useRef(false)
+  const composerDraftLoadedRef = useRef(false)
   const [windows, setWindows] = useState<TmuxWindow[]>([])
-  const [activeWindowIndex, setActiveWindowIndex] = useState(() => parseInt(localStorage.getItem(WINDOW_KEY) || '0', 10))
+  const [activeWindowIndex, setActiveWindowIndex] = useState(() => initialChannelIndex(initialLocation))
   const [showSettings, setShowSettings] = useState(false)
   const [showGeneralSettings, setShowGeneralSettings] = useState(false)
   const [showSessionManagerV2, setShowSessionManagerV2] = useState(false)
+  const [showAttentionCenter, setShowAttentionCenter] = useState(false)
+  const [attentionCount, setAttentionCount] = useState(0)
   const [showNewSession, setShowNewSession] = useState(false)
   const [showNewWindow, setShowNewWindow] = useState(false)
   const [showSessionDrawer, setShowSessionDrawer] = useState(false)
@@ -345,6 +408,16 @@ export default function Terminal({ token }: Props) {
   const [showScrollback, setShowScrollback] = useState(false)
   const [scrollbackContent, setScrollbackContent] = useState('')
   const [scrollbackLoading, setScrollbackLoading] = useState(false)
+  const [composerMode, setComposerMode] = useState<ComposerMode>('direct')
+  const [composerAppendEnter, setComposerAppendEnter] = useState(true)
+  const [composerDraft, setComposerDraft] = useState('')
+  const [composerCursor, setComposerCursor] = useState(0)
+  const [composerDraftLoaded, setComposerDraftLoaded] = useState(false)
+  const [composerDraftDirty, setComposerDraftDirty] = useState(false)
+  const [composerHistory, setComposerHistory] = useState<InputHistoryItem[]>([])
+  const [showComposerHistory, setShowComposerHistory] = useState(false)
+  const [composerHistoryLoading, setComposerHistoryLoading] = useState(false)
+  const [composerPanelHeight, setComposerPanelHeight] = useState(0)
   const showScrollbackRef = useRef(false)
   const swipeUpAccumRef = useRef(0)
   const scrollbackOverlayRef = useRef<HTMLDivElement>(null)
@@ -352,7 +425,7 @@ export default function Terminal({ token }: Props) {
   const scrollbackPrefetchRef = useRef<Promise<{ content: string }> | null>(null)
   const scrollbackCacheRef = useRef<string | null>(null)
   const pausePollingRef = useRef(false)
-  const activeWindowIndexRef = useRef(0)
+  const activeWindowIndexRef = useRef(activeWindowIndex)
   const windowsInitializedRef = useRef(false)
   const windowsLoadedRef = useRef(false)
   const [windowsLoaded, setWindowsLoaded] = useState(false)
@@ -385,6 +458,7 @@ export default function Terminal({ token }: Props) {
   const [isScrolledUp, setIsScrolledUp] = useState(false)
   const toolbarWrapRef = useRef<HTMLDivElement>(null)
   const toolbarHeightRef = useRef(0)
+  const [toolbarHeight, setToolbarHeight] = useState(0)
   const keyboardVisibleRef = useRef(false)
   // Viewport height is handled by CSS 100dvh, not JS
   const [drawerMenuIndex, setDrawerMenuIndex] = useState<number | null>(null)
@@ -395,17 +469,18 @@ export default function Terminal({ token }: Props) {
   const [toolbarCollapsed, setToolbarCollapsed] = useState<boolean | undefined>(() => {
     const saved = localStorage.getItem('nexus_toolbar_collapsed')
     if (saved !== null) return saved === 'true'
-    return window.innerWidth >= 1024 // PC 默认收起，移动端默认展开
+    return window.innerWidth < 768 ? true : window.innerWidth >= 1024
   })
   const toolbarCollapsedRef = useRef<boolean | undefined>(undefined)
   useEffect(() => { toolbarCollapsedRef.current = toolbarCollapsed }, [toolbarCollapsed])
   const [uploadNotifications, setUploadNotifications] = useState<Array<{ id: string; filename: string; path: string }>>([])
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [locationCopied, setLocationCopied] = useState(false)
 
   // F-18: 多 tmux session 支持
   const [tmuxSessions, setTmuxSessions] = useState<string[]>([])
-  const [activeTmuxSession, setActiveTmuxSession] = useState<string>(() => localStorage.getItem('nexus_session') || '~')
-  const [wsSessionKey, setWsSessionKey] = useState<string>(() => localStorage.getItem('nexus_session') || '~')
+  const [activeTmuxSession, setActiveTmuxSession] = useState<string>(() => initialProjectName(initialLocation))
+  const [wsSessionKey, setWsSessionKey] = useState<string>(() => initialProjectName(initialLocation))
   const activeTmuxSessionRef = useRef(activeTmuxSession)
   activeTmuxSessionRef.current = activeTmuxSession
   const sessionManagerRef = useRef<SessionManagerV2Handle>(null)
@@ -426,13 +501,13 @@ export default function Terminal({ token }: Props) {
     fetch('/api/config', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then(d => {
-        if (d.tmuxSession && !localStorage.getItem('nexus_session')) {
+        if (d.tmuxSession && !localStorage.getItem('nexus_session') && !initialLocation.hasProject) {
           setActiveTmuxSession(d.tmuxSession)
           setWsSessionKey(d.tmuxSession)
         }
       })
       .catch(() => {})
-  }, [token])
+  }, [initialLocation.hasProject, token])
 
   // 获取所有 tmux sessions 和 projects
   useEffect(() => {
@@ -464,6 +539,35 @@ export default function Terminal({ token }: Props) {
 
   // 使用 matchMedia 替代 resize 事件：折叠屏设备（vivo X Fold 等）
   // 展开/折叠时 window resize 事件不可靠，matchMedia change 由浏览器引擎底层触发
+  const fetchProjectList = useCallback(async (): Promise<ProjectInfo[]> => {
+    const r = await fetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return await r.json()
+  }, [token])
+
+  const fetchWindowList = useCallback(async (session: string): Promise<TmuxWindow[]> => {
+    const r = await fetch(`/api/sessions?session=${encodeURIComponent(session)}`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const d = await r.json()
+    return d.windows ?? []
+  }, [token])
+
+  const resolveChannelIndex = useCallback((wins: TmuxWindow[], preferred?: number | null) => {
+    if (preferred !== undefined && preferred !== null && wins.some(w => w.index === preferred)) return preferred
+    const active = wins.find(w => w.active)
+    return active?.index ?? wins[0]?.index ?? 0
+  }, [])
+
+  const activateProject = useCallback(async (project: string): Promise<number | null> => {
+    const r = await fetch(`/api/projects/${encodeURIComponent(project)}/activate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const data = await r.json()
+    return data.lastChannel === null || data.lastChannel === undefined ? null : Number(data.lastChannel)
+  }, [token])
+
   useEffect(() => {
     const mqWide = window.matchMedia('(min-width: 1024px)')
     const mqEmbed = window.matchMedia('(min-width: 700px)')
@@ -529,6 +633,43 @@ export default function Terminal({ token }: Props) {
     setUploadNotifications(prev => prev.filter(n => n.id !== id))
   }, [])
 
+  const fetchAttentionCount = useCallback(async () => {
+    try {
+      const res = await fetch('/api/attention-events/count?status=unresolved', { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) return
+      const data = await res.json()
+      setAttentionCount(Number(data.count) || 0)
+    } catch {}
+  }, [token])
+
+  const showAttentionNotification = useCallback(async () => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return
+    try {
+      const res = await fetch('/api/attention-events?status=unresolved&limit=1', { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) return
+      const events = await res.json()
+      const event = Array.isArray(events) ? events[0] : null
+      if (!event) return
+      const typeLabel = t(`attention.types.${event.type}`)
+      const summary = String(event.summary || '').replace(/\s+/g, ' ').slice(0, 120)
+      new Notification(typeLabel, { body: summary })
+    } catch {}
+  }, [t, token])
+
+  useEffect(() => {
+    fetchAttentionCount()
+    const interval = window.setInterval(fetchAttentionCount, 5000)
+    return () => window.clearInterval(interval)
+  }, [fetchAttentionCount])
+
+  const previousAttentionCountRef = useRef(0)
+  useEffect(() => {
+    if (attentionCount > previousAttentionCountRef.current) {
+      showAttentionNotification()
+    }
+    previousAttentionCountRef.current = attentionCount
+  }, [attentionCount, showAttentionNotification])
+
   const copyToClipboard = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
@@ -544,6 +685,98 @@ export default function Terminal({ token }: Props) {
     }
   }, [])
 
+  const syncLocationUrl = useCallback((project: string, channelIndex: number) => {
+    if (!project) return ''
+    return replaceProjectChannelUrl(project, normalizeChannelIndex(channelIndex))
+  }, [])
+
+  const markChannelSeenRemote = useCallback((project: string, channelIndex: number) => {
+    fetch('/api/channel-status/seen', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: project, index: channelIndex }),
+    }).catch(() => {})
+  }, [token])
+
+  const attachResolvedChannel = useCallback(async (project: string, channelIndex: number) => {
+    const r = await fetch(`/api/sessions/${channelIndex}/attach?session=${encodeURIComponent(project)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    markChannelSeenRemote(project, channelIndex)
+  }, [markChannelSeenRemote, token])
+
+  const applyResolvedLocation = useCallback((project: string, channelIndex: number, resolvedWindows?: TmuxWindow[]) => {
+    const idx = normalizeChannelIndex(channelIndex)
+    localStorage.setItem('nexus_session', project)
+    localStorage.setItem(WINDOW_KEY, String(idx))
+    activeTmuxSessionRef.current = project
+    activeWindowIndexRef.current = idx
+    setActiveTmuxSession(project)
+    setWsSessionKey(project)
+    setActiveWindowIndex(idx)
+    if (resolvedWindows) {
+      setWindows(resolvedWindows)
+      windowsRef.current = resolvedWindows
+    }
+    windowsInitializedRef.current = true
+    windowsLoadedRef.current = true
+    setWindowsLoaded(true)
+    syncLocationUrl(project, idx)
+  }, [syncLocationUrl])
+
+  const handleCopyCurrentLocation = useCallback(async () => {
+    const url = buildProjectChannelUrl({
+      baseUrl: window.location.href,
+      project: activeTmuxSessionRef.current,
+      channel: activeWindowIndexRef.current,
+    })
+    await copyToClipboard(url)
+    setLocationCopied(true)
+    window.setTimeout(() => setLocationCopied(false), 1800)
+  }, [copyToClipboard])
+
+  useEffect(() => {
+    if (urlRestoreDoneRef.current) return
+    urlRestoreDoneRef.current = true
+    if (!initialLocation.hasProject && !initialLocation.hasChannel) {
+      return
+    }
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const projectList = await fetchProjectList()
+        if (cancelled) return
+        const requestedProject = initialLocation.project
+        const storedProject = localStorage.getItem('nexus_session') || ''
+        const targetProject = requestedProject && projectList.some(p => p.name === requestedProject)
+          ? requestedProject
+          : projectList.some(p => p.name === storedProject)
+            ? storedProject
+            : projectList[0]?.name || activeTmuxSessionRef.current
+        const requestedProjectExists = targetProject === requestedProject
+        const lastChannel = requestedProjectExists
+          ? null
+          : await activateProject(targetProject).catch(() => null)
+        if (cancelled) return
+        const wins = await fetchWindowList(targetProject)
+        if (cancelled) return
+        const targetChannel = resolveChannelIndex(
+          wins,
+          initialLocation.channel !== null ? initialLocation.channel : lastChannel ?? activeWindowIndexRef.current
+        )
+        await attachResolvedChannel(targetProject, targetChannel)
+        if (cancelled) return
+        applyResolvedLocation(targetProject, targetChannel, wins)
+      } catch {
+        syncLocationUrl(activeTmuxSessionRef.current, activeWindowIndexRef.current)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [activateProject, applyResolvedLocation, attachResolvedChannel, fetchProjectList, fetchWindowList, initialLocation, resolveChannelIndex, syncLocationUrl])
+
   const handleCopyNotification = useCallback(async (id: string, path: string) => {
     await copyToClipboard(path)
     setCopiedId(id)
@@ -557,19 +790,336 @@ export default function Terminal({ token }: Props) {
   }, [])
 
   useEffect(() => {
+    composerModeRef.current = composerMode
+  }, [composerMode])
+
+  useEffect(() => {
+    composerDraftRef.current = composerDraft
+  }, [composerDraft])
+
+  useEffect(() => {
+    composerCursorRef.current = composerCursor
+  }, [composerCursor])
+
+  useEffect(() => {
+    composerDraftDirtyRef.current = composerDraftDirty
+  }, [composerDraftDirty])
+
+  useEffect(() => {
+    composerDraftLoadedRef.current = composerDraftLoaded
+  }, [composerDraftLoaded])
+
+  const saveComposerSettings = useCallback(async (patch: Partial<{ composerMode: ComposerMode; composerAppendEnter: boolean }>) => {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(patch),
+      })
+      if (!res.ok) return
+      const settings = await res.json()
+      if (patch.composerMode !== undefined) {
+        const nextMode = settings.composerMode === 'composer' ? 'composer' : 'direct'
+        if (patch.composerMode === 'composer' && nextMode !== 'composer') return
+        composerModeRef.current = nextMode
+        setComposerMode(nextMode)
+      }
+      setComposerAppendEnter(settings.composerAppendEnter !== false)
+    } catch {}
+  }, [token])
+
+  const updateComposerSelection = useCallback(() => {
+    const textarea = composerTextareaRef.current
+    if (!textarea) return
+    setComposerCursor(textarea.selectionStart ?? textarea.value.length)
+  }, [])
+
+  const focusComposerTextareaSoon = useCallback(() => {
+    const focusAtCursor = () => {
+      if (composerModeRef.current !== 'composer') return false
+      const textarea = composerTextareaRef.current
+      if (!textarea) return false
+      const cursor = Math.max(0, Math.min(composerCursorRef.current, textarea.value.length))
+      textarea.focus()
+      textarea.selectionStart = cursor
+      textarea.selectionEnd = cursor
+      return true
+    }
+
+    requestAnimationFrame(() => {
+      if (!focusAtCursor()) window.setTimeout(focusAtCursor, 30)
+    })
+  }, [])
+
+  const saveComposerDraftNow = useCallback(async (text: string, cursorPos: number, scope = composerScopeRef.current) => {
+    if (!scope) return
+    try {
+      await fetch('/api/composer-drafts', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          project: scope.project,
+          channelIndex: scope.channelIndex,
+          text,
+          cursorPos,
+        }),
+      })
+    } catch {}
+  }, [token])
+
+  const clearComposerDraftRemote = useCallback(async (scope = composerScopeRef.current) => {
+    if (!scope) return
+    try {
+      await fetch(`/api/composer-drafts?project=${encodeURIComponent(scope.project)}&channel=${encodeURIComponent(String(scope.channelIndex))}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    } catch {}
+  }, [token])
+
+  const loadComposerHistory = useCallback(async () => {
+    setComposerHistoryLoading(true)
+    try {
+      const params = new URLSearchParams({
+        project: activeTmuxSessionRef.current,
+        channel: String(activeWindowIndexRef.current),
+        limit: '50',
+      })
+      const res = await fetch(`/api/input-history?${params}`, { headers: { Authorization: `Bearer ${token}` } })
+      if (res.ok) setComposerHistory(await res.json())
+    } catch {
+      setComposerHistory([])
+    } finally {
+      setComposerHistoryLoading(false)
+    }
+  }, [token])
+
+  const toggleComposerMode = useCallback((mode: ComposerMode) => {
+    composerModeRef.current = mode
+    setComposerMode(mode)
+    saveComposerSettings({ composerMode: mode })
+    if (mode === 'composer') {
+      keyboardVisibleRef.current = true
+      focusComposerTextareaSoon()
+    } else {
+      setShowComposerHistory(false)
+    }
+  }, [focusComposerTextareaSoon, saveComposerSettings])
+
+  const openComposer = useCallback(() => {
+    composerModeRef.current = 'composer'
+    setComposerMode('composer')
+    keyboardVisibleRef.current = true
+    saveComposerSettings({ composerMode: 'composer' })
+    focusComposerTextareaSoon()
+  }, [focusComposerTextareaSoon, saveComposerSettings])
+
+  const closeComposer = useCallback(() => {
+    toggleComposerMode('direct')
+    composerTextareaRef.current?.blur()
+  }, [toggleComposerMode])
+
+  const toggleComposerAppendEnter = useCallback(() => {
+    const next = !composerAppendEnter
+    setComposerAppendEnter(next)
+    saveComposerSettings({ composerAppendEnter: next })
+  }, [composerAppendEnter, saveComposerSettings])
+
+  function setComposerDraftWithCursor(text: string, cursorPos: number, markDirty = true) {
+    const nextCursor = Math.max(0, Math.min(cursorPos, text.length))
+    setComposerDraft(text)
+    setComposerCursor(nextCursor)
+    setComposerDraftDirty(markDirty)
+    requestAnimationFrame(() => {
+      const textarea = composerTextareaRef.current
+      if (!textarea) return
+      textarea.selectionStart = nextCursor
+      textarea.selectionEnd = nextCursor
+      textarea.focus()
+    })
+  }
+
+  function handleComposerChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    setComposerDraft(e.target.value)
+    setComposerCursor(e.target.selectionStart ?? e.target.value.length)
+    setComposerDraftDirty(true)
+  }
+
+  function handleComposerClear() {
+    setComposerDraft('')
+    setComposerCursor(0)
+    setComposerDraftDirty(false)
+    setShowComposerHistory(false)
+    clearComposerDraftRemote()
+    toggleComposerMode('direct')
+  }
+
+  function handleComposerHistoryToggle() {
+    setShowComposerHistory(v => !v)
+    if (composerModeRef.current !== 'composer') openComposer()
+  }
+
+  async function handleComposerSend() {
+    const text = composerDraft
+    if (!text.trim()) return
+    sendToWs(text + (composerAppendEnter ? '\r' : ''))
+    const scope = composerScopeRef.current ?? { project: activeTmuxSessionRef.current, channelIndex: activeWindowIndexRef.current }
+    try {
+      await fetch('/api/input-history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ project: scope.project, channelIndex: scope.channelIndex, text }),
+      })
+    } catch {}
+    await clearComposerDraftRemote(scope)
+    setComposerDraft('')
+    setComposerCursor(0)
+    setComposerDraftDirty(false)
+    setShowComposerHistory(false)
+    toggleComposerMode('direct')
+    loadComposerHistory()
+  }
+
+  function applyComposerHistory(item: InputHistoryItem) {
+    composerModeRef.current = 'composer'
+    setComposerMode('composer')
+    keyboardVisibleRef.current = true
+    saveComposerSettings({ composerMode: 'composer' })
+    setComposerDraftWithCursor(item.text, item.text.length)
+    setShowComposerHistory(false)
+  }
+
+  function handleComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (composerImeRef.current || e.nativeEvent.isComposing) return
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault()
+      handleComposerSend()
+    }
+  }
+
+  useEffect(() => {
     applyTheme(themeMode)
   }, [themeMode, applyTheme])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(settings => {
+        if (cancelled || !settings) return
+        const nextMode: ComposerMode = settings.composerMode === 'composer' ? 'composer' : 'direct'
+        if (!(nextMode === 'direct' && composerModeRef.current === 'composer')) {
+          composerModeRef.current = nextMode
+          setComposerMode(nextMode)
+          if (nextMode === 'composer') {
+            keyboardVisibleRef.current = true
+            focusComposerTextareaSoon()
+          }
+        }
+        setComposerAppendEnter(settings.composerAppendEnter !== false)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [focusComposerTextareaSoon, token])
+
+  useEffect(() => {
+    if (isWidePC) return
+    const scope = { project: activeTmuxSession, channelIndex: activeWindowIndex }
+    const previousScope = composerScopeRef.current
+    if (previousScope && composerDraftLoadedRef.current && composerDraftDirtyRef.current) {
+      saveComposerDraftNow(composerDraftRef.current, composerCursorRef.current, previousScope)
+    }
+    composerScopeRef.current = scope
+    if (composerSaveTimerRef.current) {
+      window.clearTimeout(composerSaveTimerRef.current)
+      composerSaveTimerRef.current = null
+    }
+    setShowComposerHistory(false)
+    setComposerDraft('')
+    setComposerCursor(0)
+    setComposerDraftDirty(false)
+    setComposerDraftLoaded(false)
+    let cancelled = false
+    const params = new URLSearchParams({ project: scope.project, channel: String(scope.channelIndex) })
+    fetch(`/api/composer-drafts?${params}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(draft => {
+        if (cancelled) return
+        const current = composerScopeRef.current
+        if (!current || current.project !== scope.project || current.channelIndex !== scope.channelIndex) return
+        const text = typeof draft?.text === 'string' ? draft.text : ''
+        const cursor = Math.max(0, Math.min(Number(draft?.cursorPos) || 0, text.length))
+        setComposerDraft(text)
+        setComposerCursor(cursor)
+        setComposerDraftDirty(false)
+        setComposerDraftLoaded(true)
+        requestAnimationFrame(() => {
+          const textarea = composerTextareaRef.current
+          if (!textarea) return
+          textarea.selectionStart = cursor
+          textarea.selectionEnd = cursor
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setComposerDraftLoaded(true)
+      })
+    return () => { cancelled = true }
+  }, [activeTmuxSession, activeWindowIndex, isWidePC, saveComposerDraftNow, token])
+
+  useEffect(() => {
+    if (isWidePC) return
+    if (!composerDraftLoaded || !composerDraftDirty) return
+    const scope = composerScopeRef.current
+    if (!scope) return
+    if (composerSaveTimerRef.current) window.clearTimeout(composerSaveTimerRef.current)
+    composerSaveTimerRef.current = window.setTimeout(() => {
+      saveComposerDraftNow(composerDraft, composerCursor, scope)
+      composerSaveTimerRef.current = null
+    }, 600)
+    return () => {
+      if (composerSaveTimerRef.current) {
+        window.clearTimeout(composerSaveTimerRef.current)
+        composerSaveTimerRef.current = null
+      }
+    }
+  }, [composerDraft, composerCursor, composerDraftDirty, composerDraftLoaded, isWidePC, saveComposerDraftNow])
+
+  useEffect(() => {
+    if (!showComposerHistory) return
+    loadComposerHistory()
+  }, [showComposerHistory, activeTmuxSession, activeWindowIndex, loadComposerHistory])
+
+  const hasComposerDraft = composerDraft.length > 0
+  const showMobileComposerPanel = !isWidePC && composerMode === 'composer'
+
+  useEffect(() => {
+    if (isWidePC) {
+      setComposerPanelHeight(0)
+      return
+    }
+    if (!showMobileComposerPanel) {
+      setComposerPanelHeight(0)
+      return
+    }
+    const el = composerWrapRef.current
+    if (!el) return
+    const update = () => setComposerPanelHeight(el.offsetHeight)
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    update()
+    return () => ro.disconnect()
+  }, [isWidePC, showMobileComposerPanel, composerDraft, showComposerHistory])
 
   // 动态页面标题：反映当前窗口和 Agent 状态
   useEffect(() => {
     const win = windows.find(w => w.index === activeWindowIndex)
-    const taskBadge = ''
+    const taskBadge = attentionCount > 0 ? `(${attentionCount}) ` : ''
     if (!win) { document.title = `${taskBadge}Nexus`; return }
     const status = getWindowStatus(windowOutputs[activeWindowIndex])
     const statusSymbol = status === 'active' ? '⚡' : status === 'needs-confirm' ? '⏳' : status === 'done' ? '✅' : status === 'shell' ? '💤' : ''
     document.title = `${taskBadge}${statusSymbol ? statusSymbol + ' ' : ''}${win.name} — Nexus`
     return () => { document.title = 'Nexus' }
-  }, [windows, activeWindowIndex, windowOutputs])
+  }, [windows, activeWindowIndex, windowOutputs, attentionCount])
 
   // 定期刷新窗口列表（每 2 秒），保持与 tmux 同步
   useEffect(() => {
@@ -694,10 +1244,7 @@ export default function Terminal({ token }: Props) {
   async function fetchWindows() {
     try {
       const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions?session=${encodeURIComponent(session)}`, { headers: { Authorization: `Bearer ${token}` } })
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const d = await r.json()
-      const wins = d.windows ?? []
+      const wins = await fetchWindowList(session)
       setWindows(wins)
       if (!windowsLoadedRef.current) {
         windowsLoadedRef.current = true
@@ -713,20 +1260,27 @@ export default function Terminal({ token }: Props) {
           const active = wins.find((w: TmuxWindow) => w.active)
           if (active) {
             setActiveWindowIndex(active.index)
+            activeWindowIndexRef.current = active.index
             localStorage.setItem(WINDOW_KEY, String(active.index))
+            syncLocationUrl(session, active.index)
           }
         }
         // 如果 currentStillExists，保持 persisted window 不变
+        if (currentStillExists) syncLocationUrl(session, activeWindowIndexRef.current)
       } else if (!currentStillExists) {
         // 轮询时当前窗口消失：fallback 到 tmux 活跃窗口
         const active = wins.find((w: TmuxWindow) => w.active)
         if (active) {
           setActiveWindowIndex(active.index)
+          activeWindowIndexRef.current = active.index
           localStorage.setItem(WINDOW_KEY, String(active.index))
+          syncLocationUrl(session, active.index)
         }
       }
+      return wins
     } catch {
       // ignore
+      return []
     }
   }
 
@@ -749,13 +1303,11 @@ export default function Terminal({ token }: Props) {
       })
       if (r.ok) {
         setActiveWindowIndex(index)
+        activeWindowIndexRef.current = index
         localStorage.setItem(WINDOW_KEY, String(index))
+        syncLocationUrl(session, index)
         // 进入频道即清除其粘性提醒(needs-confirm/done)
-        fetch('/api/channel-status/seen', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session, index }),
-        }).catch(() => {})
+        markChannelSeenRemote(session, index)
         // 暂停轮询 3 秒，避免 optimistic 状态被覆盖
         pausePollingRef.current = true
         setTimeout(() => { pausePollingRef.current = false }, 3000)
@@ -876,7 +1428,8 @@ export default function Terminal({ token }: Props) {
     setTimeout(() => sessionManagerRef.current?.refresh(), 500)
   }
 
-  async function handleSwitchSession(newSession: string, lastChannel?: number) {
+  async function handleSwitchSession(newSession: string, lastChannel?: number | null, options: { syncUrl?: boolean } = {}) {
+    const { syncUrl = true } = options
     localStorage.setItem('nexus_session', newSession)
     // 同步更新 ref，确保 fetch 能立即读到新 session
     activeTmuxSessionRef.current = newSession
@@ -914,7 +1467,9 @@ export default function Terminal({ token }: Props) {
         }
 
         setActiveWindowIndex(target)
+        activeWindowIndexRef.current = target
         localStorage.setItem(WINDOW_KEY, String(target))
+        if (syncUrl) syncLocationUrl(newSession, target)
         // 强制 WebSocket 重连到验证后的窗口
         setWsSessionKey(newSession)
         return
@@ -922,15 +1477,28 @@ export default function Terminal({ token }: Props) {
     } catch {}
 
     // fetch 失败时的兜底：使用 lastChannel 或 0，延迟重试
-    setActiveWindowIndex(lastChannel ?? 0)
-    if (lastChannel != null) {
-      localStorage.setItem(WINDOW_KEY, String(lastChannel))
-    } else {
-      localStorage.removeItem(WINDOW_KEY)
-    }
+    const fallbackChannel = lastChannel !== undefined && lastChannel !== null ? normalizeChannelIndex(lastChannel) : 0
+    setActiveWindowIndex(fallbackChannel)
+    activeWindowIndexRef.current = fallbackChannel
+    if (lastChannel != null) localStorage.setItem(WINDOW_KEY, String(fallbackChannel))
+    else localStorage.removeItem(WINDOW_KEY)
+    if (syncUrl) syncLocationUrl(newSession, fallbackChannel)
     setWsSessionKey(newSession)
-    setTimeout(() => fetchWindows(), 100)
+    setTimeout(() => {
+      if (activeTmuxSessionRef.current === newSession) fetchWindows()
+    }, 100)
   }
+
+  const handleAttentionJump = useCallback((project: string, channelIndex?: number | null) => {
+    const targetProject = project || activeTmuxSessionRef.current
+    const targetChannel = channelIndex === null || channelIndex === undefined ? undefined : Number(channelIndex)
+    if (targetProject !== activeTmuxSessionRef.current) {
+      handleSwitchSession(targetProject, targetChannel)
+      if (targetChannel !== undefined) markChannelSeenRemote(targetProject, targetChannel)
+      return
+    }
+    if (targetChannel !== undefined) attachToWindow(targetChannel)
+  }, [markChannelSeenRemote])
 
   function handleFileUpload() {
     fileInputRef.current?.click()
@@ -1428,6 +1996,13 @@ export default function Terminal({ token }: Props) {
         // doesn't steal focus from our managed input.
         e.preventDefault()
         const xtermTa = termRef.current?.textarea
+        if (composerModeRef.current === 'composer') {
+          keyboardVisibleRef.current = true
+          if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
+          if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
+          composerTextareaRef.current?.focus()
+          return
+        }
         // 工具栏展开时收起工具栏；若键盘也可见则一并收起
         if (toolbarCollapsedRef.current === false) {
           setToolbarCollapsed(true)
@@ -1806,17 +2381,21 @@ export default function Terminal({ token }: Props) {
   useEffect(() => {
     const el = toolbarWrapRef.current
     if (!el) return
-    const ro = new ResizeObserver(() => {
+    const update = () => {
       toolbarHeightRef.current = el.offsetHeight
+      setToolbarHeight(el.offsetHeight)
+    }
+    const ro = new ResizeObserver(() => {
+      update()
     })
     ro.observe(el)
-    toolbarHeightRef.current = el.offsetHeight
+    update()
     return () => ro.disconnect()
   }, [])
 
   // Overlay guard: when any overlay opens, set xterm textarea to readOnly
   // to prevent virtual keyboard from appearing when keyboard dismisses
-  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showFiles
+  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showAttentionCenter || showFiles
   useEffect(() => {
     if (isWidePC) return
     const ta = termRef.current?.textarea
@@ -1891,6 +2470,9 @@ export default function Terminal({ token }: Props) {
 
   triggerScrollbackRef.current = fetchScrollback
 
+  const composerCursorMeta = cursorInfo(composerDraft, composerCursor)
+  const mobileBottomInset = toolbarHeight + composerPanelHeight
+
   const toolbarProps = {
     token,
     sendToWs,
@@ -1906,6 +2488,25 @@ export default function Terminal({ token }: Props) {
     onUploadFile: uploadFile,
     onUploadFiles: enqueueFiles,
     onShowCopySheet: (text: string) => setCopySheetText(text),
+    composerControls: !isWidePC ? {
+      active: composerMode === 'composer',
+      hasDraft: hasComposerDraft,
+      appendEnter: composerAppendEnter,
+      historyOpen: showComposerHistory,
+      onOpen: openComposer,
+      onClose: closeComposer,
+      onToggleAppendEnter: toggleComposerAppendEnter,
+      onToggleHistory: handleComposerHistoryToggle,
+      onClear: handleComposerClear,
+    } : undefined,
+    attentionEntry: !isWidePC ? {
+      count: attentionCount,
+      onOpen: () => setShowAttentionCenter(true),
+    } : undefined,
+    locationShare: {
+      copied: locationCopied,
+      onCopy: handleCopyCurrentLocation,
+    },
     collapsed: toolbarCollapsed,
     onCollapsedChange: setToolbarCollapsed,
   }
@@ -2055,6 +2656,20 @@ export default function Terminal({ token }: Props) {
                     </button>
 
                     <button
+                      onClick={(e) => { e.stopPropagation(); setShowAttentionCenter(true); }}
+                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer relative"
+                      title={t('attention.entryLabel', { count: attentionCount })}
+                      aria-label={t('attention.entryLabel', { count: attentionCount })}
+                    >
+                      <Icon name="alert" size={18} />
+                      {attentionCount > 0 && (
+                        <span className="absolute top-1 right-1 min-w-4 h-4 px-1 rounded-full bg-nexus-error text-white text-[10px] leading-4 text-center">
+                          {attentionCount > 99 ? '99+' : attentionCount}
+                        </span>
+                      )}
+                    </button>
+
+                    <button
                       onClick={(e) => { e.stopPropagation(); handleFileUpload(); }}
                       className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
                       title={t('files.upload')}
@@ -2108,6 +2723,22 @@ export default function Terminal({ token }: Props) {
                       onCloseEditor={() => workspaceBrowserRef.current?.closeEditor()}
                       layout="sidebar"
                     />
+                  </div>
+                  <div className="border-t border-nexus-border shrink-0 px-2 py-1.5">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowAttentionCenter(true); }}
+                      className="w-full h-8 rounded-md bg-transparent border border-nexus-border text-nexus-text-2 flex items-center justify-center gap-2 cursor-pointer relative"
+                      title={t('attention.entryLabel', { count: attentionCount })}
+                      aria-label={t('attention.entryLabel', { count: attentionCount })}
+                    >
+                      <Icon name="alert" size={15} />
+                      <span className="text-xs">{t('attention.entry')}</span>
+                      {attentionCount > 0 && (
+                        <span className="min-w-5 h-5 px-1.5 rounded-full bg-nexus-error text-white text-[11px] leading-5 text-center">
+                          {attentionCount > 99 ? '99+' : attentionCount}
+                        </span>
+                      )}
+                    </button>
                   </div>
                   <div className="border-t border-nexus-border shrink-0" onClick={(e) => e.stopPropagation()}>
                     <Toolbar {...toolbarProps} embedded />
@@ -2214,8 +2845,87 @@ export default function Terminal({ token }: Props) {
           </div>
           {!fileEditorOpen && (
             <>
-              <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={toolbarHeightRef.current} />
-              <div ref={toolbarWrapRef}><Toolbar {...toolbarProps} /></div>
+          {showMobileComposerPanel && (
+            <div ref={composerWrapRef} className="shrink-0 bg-nexus-menu-bg border-t border-nexus-border">
+              <div className="flex items-center gap-2 px-2.5 py-2">
+                <div className="min-w-0 flex-1 flex items-center gap-2">
+                  <Icon name="edit" size={15} className="text-nexus-accent shrink-0" />
+                  <span className="text-xs font-medium text-nexus-text truncate">{t('composer.title')}</span>
+                  <span className="text-[11px] text-nexus-text-2 font-mono shrink-0">
+                    L{composerCursorMeta.line}:C{composerCursorMeta.column}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="h-8 w-8 rounded-md bg-transparent border border-nexus-border text-nexus-text-2 cursor-pointer flex items-center justify-center shrink-0"
+                  onPointerDown={(e) => { e.preventDefault(); closeComposer() }}
+                  title={t('composer.close')}
+                  aria-label={t('composer.close')}
+                >
+                  <Icon name="arrowDown" size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="h-8 w-9 rounded-md bg-nexus-accent border-none text-white cursor-pointer flex items-center justify-center shrink-0 disabled:opacity-40"
+                  onPointerDown={(e) => { e.preventDefault(); handleComposerSend() }}
+                  disabled={!composerDraft.trim()}
+                  title={t('composer.send')}
+                  aria-label={t('composer.send')}
+                >
+                  <Icon name="play" size={15} />
+                </button>
+              </div>
+              <div className="px-2.5 pb-2 flex flex-col gap-2">
+                <textarea
+                  ref={composerTextareaRef}
+                  value={composerDraft}
+                  rows={3}
+                  placeholder={t('composer.placeholder')}
+                  className="w-full max-h-[28dvh] min-h-[72px] resize-y bg-nexus-bg border border-nexus-border rounded-md text-nexus-text text-base leading-5 font-mono px-3 py-2 outline-none focus:border-nexus-accent"
+                  style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
+                  onChange={handleComposerChange}
+                  onKeyDown={handleComposerKeyDown}
+                  onSelect={updateComposerSelection}
+                  onClick={updateComposerSelection}
+                  onKeyUp={updateComposerSelection}
+                  onCompositionStart={() => { composerImeRef.current = true }}
+                  onCompositionEnd={(e) => {
+                    composerImeRef.current = false
+                    setComposerCursor(e.currentTarget.selectionStart ?? e.currentTarget.value.length)
+                    setComposerDraftDirty(true)
+                  }}
+                />
+                {showComposerHistory && (
+                  <div className="max-h-[24dvh] overflow-y-auto rounded-md border border-nexus-border bg-nexus-bg">
+                    {composerHistoryLoading ? (
+                      <div className="px-3 py-3 text-xs text-nexus-text-2">{t('common.loading')}</div>
+                    ) : composerHistory.length === 0 ? (
+                      <div className="px-3 py-3 text-xs text-nexus-text-2">{t('composer.noHistory')}</div>
+                    ) : (
+                      composerHistory.map(item => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className="w-full text-left bg-transparent border-none border-b border-nexus-border last:border-b-0 px-3 py-2 cursor-pointer"
+                          onPointerDown={(e) => { e.preventDefault(); applyComposerHistory(item) }}
+                        >
+                          <div className="flex items-center gap-2 text-[11px] text-nexus-text-2 mb-1">
+                            <span className="truncate font-mono">{item.project || '~'}:{item.channelIndex}</span>
+                            <span className="shrink-0">{new Date(item.usedAt || item.createdAt).toLocaleString()}</span>
+                          </div>
+                          <div className="text-sm text-nexus-text font-mono whitespace-pre-wrap break-words max-h-[3.9rem] overflow-hidden">
+                            {item.text}
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          <SessionFAB onClick={() => setShowSessionManagerV2(v => !v)} windowCount={windows.length} bottomInset={mobileBottomInset} />
+          <div ref={toolbarWrapRef}><Toolbar {...toolbarProps} /></div>
             </>
           )}
         </div>
@@ -2340,6 +3050,16 @@ export default function Terminal({ token }: Props) {
             token={token}
             onClose={() => setShowWorkspace(false)}
             currentSession={activeTmuxSession}
+          />
+        </Suspense>
+      )}
+      {showAttentionCenter && (
+        <Suspense fallback={null}>
+          <AttentionCenter
+            token={token}
+            onClose={() => { setShowAttentionCenter(false); fetchAttentionCount() }}
+            onJump={handleAttentionJump}
+            onChanged={fetchAttentionCount}
           />
         </Suspense>
       )}
@@ -2495,7 +3215,7 @@ export default function Terminal({ token }: Props) {
         const termFontFamily = termRef.current?.options.fontFamily ?? 'Menlo, Monaco, monospace'
         const termMuted = (termTheme as any).brightBlack ?? '#4a5568'
         return (
-          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : toolbarHeightRef.current }}>
+          <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : mobileBottomInset }}>
             <GhostShield />
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b flex-shrink-0" style={{ borderColor: `${termMuted}44` }}>
               <span className="font-semibold text-sm" style={{ color: termFg }}>历史记录</span>
@@ -2530,7 +3250,7 @@ export default function Terminal({ token }: Props) {
       {(uploadQueue.some(u => u.status !== 'done') || uploadNotifications.length > 0) && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 max-w-[90vw] w-[480px]"
-          style={{ bottom: isWidePC ? 16 : (toolbarHeightRef.current + 16) }}
+          style={{ bottom: isWidePC ? 16 : (mobileBottomInset + 16) }}
         >
           {/* 进度条 */}
           {uploadQueue.filter(u => u.status !== 'done').map((item) => (
