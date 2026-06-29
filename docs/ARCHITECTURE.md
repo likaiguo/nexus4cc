@@ -1,6 +1,6 @@
 # ARCHITECTURE — Nexus 架构现状
 
-**Last Updated**: 2026-04-06  **版本**: v4.3.1  **锚点**: `docs/NORTH-STAR.md`
+**Last Updated**: 2026-06-26  **版本**: v4.5.2+  **锚点**: `docs/NORTH-STAR.md`
 
 ---
 
@@ -85,6 +85,15 @@ Telegram Bot（可选）
 | DELETE | `/api/configs/:id` | Bearer | 删除 profile |
 | GET | `/api/toolbar-config` | Bearer | 读取工具栏配置 |
 | POST | `/api/toolbar-config` | Bearer | 保存工具栏配置 |
+| GET/PATCH | `/api/settings` | Bearer | 单用户本地设置（Composer、输入历史隐私等） |
+| GET/POST | `/api/toolbar-layouts` | Bearer | 按设备类型保存/读取快捷键布局 |
+| POST | `/api/shortcut-usage` | Bearer | 记录快捷键使用频率（只记录 key id/count） |
+| GET/POST/DELETE | `/api/input-history` | Bearer | Composer 明确提交文本历史 |
+| GET/PUT/DELETE | `/api/composer-drafts` | Bearer | 按 project/channel 保存移动端 Composer 草稿 |
+| GET/PATCH | `/api/attention-events` | Bearer | 注意力事件列表与状态更新 |
+| GET | `/api/attention-events/count` | Bearer | 未处理注意力事件计数 |
+| POST | `/api/attention-events/:id/resolve` | Bearer | 标记事件已处理 |
+| POST | `/api/attention-events/:id/dismiss` | Bearer | 忽略事件 |
 | **任务** | | | |
 | GET | `/api/tasks` | Bearer | 列出任务历史（data/tasks.json） |
 | POST | `/api/tasks` | Bearer | 提交任务（SSE 流式输出） |
@@ -111,18 +120,20 @@ function getOrCreatePty(session, windowIndex) {
 ### 频道状态轮询（channelAttention，F-21）
 
 ```javascript
-// 全部 session × window 的注意力状态(内存,无持久化)
+// 全部 session × window 的注意力状态(内存实时态 + SQLite 事件索引)
 const channelAttention = new Map()
 // key = "session:windowIndex"
 // entry: { realtime, sticky: 'needs-confirm'|'done'|null, lastSampleHash, lastActiveAt, wasActive }
 
 // 定时器(默认 3s)枚举全部 session×window,tmux capture-pane 采样,
-// 启发式判定状态;needs-confirm/done 为粘性提醒态,进入频道(attach/activate/seen)时清除。
+// 启发式判定状态;needs-confirm/done 为粘性提醒态,进入频道(attach/activate/seen)时清除 sticky。
+// 同时写入/更新 attention_events,进入频道只把事件标记为 seen,不会自动 resolved。
 // 启发式正则镜像自 frontend/src/windowStatus.ts(单一来源)。
 ```
 
 - 与 `ptyMap` 区别:`ptyMap` 仅覆盖已连接频道;`channelAttention` 主动轮询**全部**频道,使切换项目前即可看到其它项目状态。
 - 报告优先级:`needs-confirm` > `done` > 实时态(`active`/`shell`/`idle`)。
+- `attention_events` 只保存事件类型、定位信息和短摘要,不保存完整 tmux scrollback 或原始 PTY 流。
 - 可配:`ATTENTION_POLL_MS` / `ATTENTION_CAPTURE_LINES` / `ATTENTION_IDLE_MS` / `ATTENTION_MAX_CHANNELS`。
 
 **Resize 策略**: 多客户端时取所有连接的最小尺寸（min cols/rows），防止小屏遮挡内容。
@@ -168,8 +179,9 @@ App.tsx（路由）
      │    ├── FitAddon
      │    ├── WebLinksAddon
      │    └── mobile touch handlers（单指滚动、双指缩放、水平滑动切换窗口）
-     ├── Toolbar.tsx             ← 可配置按键栏（固定行 + 展开区）
+     ├── Toolbar.tsx             ← 个性化快捷键栏（设备布局 + 预设 + 高频推荐）
      │    └── toolbarDefaults.ts
+     ├── AttentionCenter.tsx     ← 未处理事件列表、跳转、resolve/dismiss（lazy）
      ├── GhostShield.tsx         ← 覆盖层守卫（防止意外 keyboard 弹出）
      ├── SessionFAB.tsx          ← 移动端浮动操作按钮
      ├── NewWindowDialog.tsx     ← 新建窗口对话框
@@ -194,6 +206,7 @@ App.tsx（路由）
 - 无全局状态库（React useState/useEffect）
 - `token` 存 localStorage
 - `toolbar config` 缓存 localStorage，权威源为服务端 `/api/toolbar-config`
+- `toolbar layouts`、`shortcut usage`、`input history`、`composer drafts`、`attention events` 权威源为 `data/nexus.sqlite`
 - `font size`、`theme`、`active window` 持久化 localStorage
 
 ### 双 Effect 模式（Terminal.tsx）
@@ -229,14 +242,20 @@ Effect B [token, activeWindowIndex] — 管理 WebSocket（窗口切换时重建
 
 ```
 data/
-├── toolbar-config.json    # 工具栏布局（所有设备共享）
-├── tasks.json             # 任务历史（上限 200 条）
+├── nexus.sqlite           # 单用户本地状态库（设置、快捷键、输入历史、草稿、任务索引、注意力事件）
+├── toolbar-config.json    # legacy 工具栏布局；首次迁移到 SQLite 后保留作回退
+├── tasks.json             # legacy 任务历史；首次迁移到 SQLite 后保留作回退
 └── configs/
     ├── profile-a.json     # claude 启动配置 profile
     └── profile-b.json
 ```
 
-**特点**: No database — JSON files + live tmux state.
+**SQLite 边界**:
+- SQLite 是单用户本地“用户状态/索引/事件”存储,不是 tmux session 存储。
+- SQLite 保存:settings、toolbar_layouts、shortcut_usage、input_history、composer_drafts、tasks 索引、attention_events。
+- SQLite 不保存:完整 tmux scrollback、原始 PTY 字节流、浏览器密码/JWT、API key 或环境变量。
+- 项目/频道存在性仍由 `tmux list-sessions` / `tmux list-windows` 查询;scrollback 仍由 `tmux capture-pane` 返回。
+- `data/toolbar-config.json` 与 `data/tasks.json` 首次启动迁移到 SQLite,原文件保留;SQLite 初始化失败时继续使用 legacy JSON 回退。
 
 **Polling**:
 - Terminal: `/api/sessions/:id/output?session=` (3s) → windowOutputs (shared to TabBar/Sidebar)

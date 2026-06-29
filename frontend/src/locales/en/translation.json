@@ -94,6 +94,8 @@
     "toggleTheme": "Toggle theme",
     "fileList": "File list",
     "workspace": "Browse workspace",
+    "copyLocation": "Copy current location",
+    "locationCopied": "Location copied",
     "more": "More",
     "tasks": "Tasks",
     "switchLight": "Light mode",
@@ -109,7 +111,54 @@
     "resetToFactory": "Resets to factory default config",
     "reset": "Reset",
     "saveAsDefault": "Save as Default",
-    "done": "Done"
+    "done": "Done",
+    "presets": "Presets",
+    "recommendations": "Frequent"
+  },
+  "toolbarPresets": {
+    "factory": "Factory",
+    "claude": "Claude frequent",
+    "shell": "Shell frequent",
+    "mobileMinimal": "Mobile minimal"
+  },
+  "composer": {
+    "title": "Command draft",
+    "direct": "Direct",
+    "composer": "Draft",
+    "directMode": "Direct Terminal mode",
+    "composerMode": "Composer mode",
+    "open": "Open draft",
+    "openDraft": "Open unsent draft",
+    "focusComposer": "Back to draft",
+    "close": "Collapse draft and use Direct",
+    "appendEnter": "Append Enter on send",
+    "history": "Input history",
+    "hideHistory": "Hide input history",
+    "clear": "Clear draft",
+    "send": "Send draft",
+    "placeholder": "Type, edit, then send...",
+    "noHistory": "No input history"
+  },
+  "attention": {
+    "title": "Attention Center",
+    "entry": "Attention",
+    "entryLabel": "Attention events: {{count}}",
+    "empty": "No attention events",
+    "noSummary": "No summary",
+    "resolve": "Resolved",
+    "dismiss": "Dismiss",
+    "types": {
+      "needs-confirm": "Needs confirmation",
+      "done": "Done",
+      "task-success": "Task complete",
+      "task-error": "Task failed"
+    },
+    "status": {
+      "new": "New",
+      "seen": "Seen",
+      "resolved": "Resolved",
+      "dismissed": "Dismissed"
+    }
   },
   "toolbarKeys": {
     "prevHistory": "Previous history",
@@ -158,6 +207,14 @@
     "apiProfiles": "API Config Profiles",
     "apiProfilesDesc": "Manage API keys, model settings, and profiles for Claude sessions.",
     "manageProfiles": "Manage Profiles",
+    "privacy": "Privacy",
+    "inputHistory": "Input history",
+    "inputHistoryDesc": "Only stores text explicitly sent from Composer, not full terminal history.",
+    "enabled": "On",
+    "disabled": "Off",
+    "retentionDays": "Retention days",
+    "clearInputHistory": "Clear input history",
+    "historyCleared": "Cleared",
     "about": "About",
     "currentVersion": "Current Version",
     "checkUpdate": "Check for Updates",

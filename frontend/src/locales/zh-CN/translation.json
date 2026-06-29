@@ -94,6 +94,8 @@
     "toggleTheme": "切换主题",
     "fileList": "文件列表",
     "workspace": "浏览工作目录",
+    "copyLocation": "复制当前位置",
+    "locationCopied": "已复制当前位置",
     "more": "更多",
     "tasks": "任务面板",
     "switchLight": "切换亮色",
@@ -109,7 +111,54 @@
     "resetToFactory": "将恢复到出厂配置",
     "reset": "重置",
     "saveAsDefault": "存为默认",
-    "done": "完成"
+    "done": "完成",
+    "presets": "一键预设",
+    "recommendations": "高频推荐"
+  },
+  "toolbarPresets": {
+    "factory": "出厂",
+    "claude": "Claude 常用",
+    "shell": "Shell 常用",
+    "mobileMinimal": "移动极简"
+  },
+  "composer": {
+    "title": "命令草稿",
+    "direct": "直连",
+    "composer": "草稿",
+    "directMode": "Direct Terminal 模式",
+    "composerMode": "Composer 模式",
+    "open": "打开草稿",
+    "openDraft": "打开未发送草稿",
+    "focusComposer": "回到草稿",
+    "close": "收起草稿并直连",
+    "appendEnter": "发送时追加 Enter",
+    "history": "输入历史",
+    "hideHistory": "隐藏输入历史",
+    "clear": "清空草稿",
+    "send": "发送草稿",
+    "placeholder": "输入后确认发送…",
+    "noHistory": "暂无输入历史"
+  },
+  "attention": {
+    "title": "待处理中心",
+    "entry": "待处理",
+    "entryLabel": "待处理事件：{{count}}",
+    "empty": "暂无待处理事件",
+    "noSummary": "无摘要",
+    "resolve": "已处理",
+    "dismiss": "忽略",
+    "types": {
+      "needs-confirm": "需要确认",
+      "done": "已完成",
+      "task-success": "任务完成",
+      "task-error": "任务失败"
+    },
+    "status": {
+      "new": "新事件",
+      "seen": "已查看",
+      "resolved": "已处理",
+      "dismissed": "已忽略"
+    }
   },
   "toolbarKeys": {
     "prevHistory": "上一条历史",
@@ -158,6 +207,14 @@
     "apiProfiles": "API 配置 Profiles",
     "apiProfilesDesc": "管理 Claude 会话的 API Key、模型设置和 Profile。",
     "manageProfiles": "管理 Profiles",
+    "privacy": "隐私",
+    "inputHistory": "输入历史",
+    "inputHistoryDesc": "仅保存 Composer 中明确发送的文本，不保存完整终端历史。",
+    "enabled": "开启",
+    "disabled": "关闭",
+    "retentionDays": "保留天数",
+    "clearInputHistory": "清空输入历史",
+    "historyCleared": "已清空",
     "about": "关于",
     "currentVersion": "当前版本",
     "checkUpdate": "检查更新",

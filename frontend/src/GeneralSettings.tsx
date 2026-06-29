@@ -27,11 +27,28 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
   const [releaseUrl, setReleaseUrl] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle')
   const [copied, setCopied] = useState(false)
+  const [inputHistoryEnabled, setInputHistoryEnabled] = useState(true)
+  const [inputHistoryRetentionDays, setInputHistoryRetentionDays] = useState(30)
+  const [historySaved, setHistorySaved] = useState(false)
+  const [historyCleared, setHistoryCleared] = useState(false)
 
   useEffect(() => {
     fetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data?.current) setCurrentVersion(data.current) })
+      .catch(() => {})
+  }, [token])
+
+  useEffect(() => {
+    fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return
+        setInputHistoryEnabled(data.inputHistoryEnabled !== false)
+        if (Number.isFinite(Number(data.inputHistoryRetentionDays))) {
+          setInputHistoryRetentionDays(Number(data.inputHistoryRetentionDays))
+        }
+      })
       .catch(() => {})
   }, [token])
 
@@ -69,6 +86,34 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
 
   function handleLanguageChange(e: React.ChangeEvent<HTMLSelectElement>) {
     i18n.changeLanguage(e.target.value)
+  }
+
+  async function savePrivacySettings(patch: Record<string, unknown>) {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(patch),
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      setInputHistoryEnabled(data.inputHistoryEnabled !== false)
+      setInputHistoryRetentionDays(Number(data.inputHistoryRetentionDays) || 30)
+      setHistorySaved(true)
+      setTimeout(() => setHistorySaved(false), 1500)
+    } catch {}
+  }
+
+  async function handleClearHistory() {
+    try {
+      const res = await fetch('/api/input-history', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return
+      setHistoryCleared(true)
+      setTimeout(() => setHistoryCleared(false), 1500)
+    } catch {}
   }
 
   return (
@@ -124,6 +169,54 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
                   {t('settings.themeLight')}
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* Privacy section */}
+          <div className="border-t border-nexus-border pt-4">
+            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-3">
+              {t('settings.privacy')}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="min-w-0">
+                <div className="text-sm text-nexus-text">{t('settings.inputHistory')}</div>
+                <div className="text-xs text-nexus-text-2 mt-0.5">{t('settings.inputHistoryDesc')}</div>
+              </div>
+              <button
+                className={`text-sm px-3 py-1.5 rounded-md border-none cursor-pointer transition-colors ${inputHistoryEnabled ? 'bg-nexus-accent text-white' : 'bg-nexus-bg-2 text-nexus-text-2'}`}
+                onPointerDown={() => {
+                  const next = !inputHistoryEnabled
+                  setInputHistoryEnabled(next)
+                  savePrivacySettings({ inputHistoryEnabled: next })
+                }}
+              >
+                {inputHistoryEnabled ? t('settings.enabled') : t('settings.disabled')}
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <span className="text-sm text-nexus-text">{t('settings.retentionDays')}</span>
+              <input
+                type="number"
+                min={0}
+                max={3650}
+                value={inputHistoryRetentionDays}
+                onChange={e => setInputHistoryRetentionDays(Number(e.target.value))}
+                onBlur={() => savePrivacySettings({ inputHistoryRetentionDays })}
+                className="w-20 bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-2.5 py-1.5 outline-none"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                className="flex items-center gap-1.5 bg-transparent border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-2 cursor-pointer"
+                onPointerDown={handleClearHistory}
+              >
+                <Icon name="x" size={14} />
+                <span>{historyCleared ? t('settings.historyCleared') : t('settings.clearInputHistory')}</span>
+              </button>
+              {historySaved && <span className="text-xs text-nexus-success">{t('common.saved')}</span>}
             </div>
           </div>
 

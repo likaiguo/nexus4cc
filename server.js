@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlink
 import { readdir, stat as statAsync } from 'fs/promises';
 import https from 'node:https';
 import multer from 'multer';
+import { createNexusStore } from './storage.js';
 
 // 加载 .env 文件（如果存在）
 try {
@@ -35,8 +36,17 @@ const DATA_DIR = join(__dirname, 'data');
 const TOOLBAR_CONFIG_FILE = join(DATA_DIR, 'toolbar-config.json');
 const CONFIGS_DIR = join(DATA_DIR, 'configs');
 const TASKS_FILE = join(DATA_DIR, 'tasks.json');
+const MAX_TASKS = 200;
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR, { recursive: true });
+
+const nexusStore = createNexusStore({
+  dataDir: DATA_DIR,
+  toolbarConfigFile: TOOLBAR_CONFIG_FILE,
+  tasksFile: TASKS_FILE,
+  maxTasks: MAX_TASKS,
+  logger: console,
+});
 
 // 自动确保 anthropic.json 存在（无需用户手动创建）
 // 优先级：已有文件不覆盖；API_KEY 从环境变量 ANTHROPIC_API_KEY 检测
@@ -110,9 +120,35 @@ function positiveIntEnv(name, fallback) {
 const SCROLLBACK_MAX_LINES = positiveIntEnv('SCROLLBACK_MAX_LINES', 50000);
 const SCROLLBACK_MAX_BUFFER = positiveIntEnv('SCROLLBACK_MAX_BUFFER', 20 * 1024 * 1024);
 const TMUX_HISTORY_LIMIT = positiveIntEnv('TMUX_HISTORY_LIMIT', SCROLLBACK_MAX_LINES);
+const ATTENTION_SUMMARY_LIMIT = 500;
 
 function buildInteractiveShellCmd(prefix = '') {
   return `${prefix}${INTERACTIVE_SHELL_CMD}`;
+}
+
+function shortAttentionSummary(text, limit = ATTENTION_SUMMARY_LIMIT) {
+  return String(text || '')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(Boolean)
+    .slice(-8)
+    .join('\n')
+    .slice(-limit)
+}
+
+function recordAttentionEvent(event) {
+  if (!nexusStore) return null
+  try {
+    return nexusStore.upsertAttentionEvent({
+      ...event,
+      summary: shortAttentionSummary(event.summary),
+    })
+  } catch (err) {
+    console.warn('[Nexus] attention event write failed:', err.message)
+    return null
+  }
 }
 
 // 静态文件：frontend/dist 和 public
@@ -145,6 +181,167 @@ app.post('/api/auth/login', async (req, res) => {
     res.status(500).json({ error: 'internal error' });
   }
 });
+
+// GET /api/settings — 单用户偏好设置
+app.get('/api/settings', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.getSettings())
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PATCH /api/settings — 更新单用户偏好设置
+app.patch('/api/settings', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const settings = nexusStore.updateSettings(req.body || {})
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'inputHistoryRetentionDays')) {
+      nexusStore.cleanupInputHistory(settings.inputHistoryRetentionDays)
+    }
+    res.json(settings)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/input-history — 清空本地输入历史（不影响 tmux scrollback）
+app.delete('/api/input-history', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const deleted = req.query.id ? nexusStore.deleteInputHistory(req.query.id) : nexusStore.clearInputHistory()
+    res.json({ ok: true, deleted })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/input-history — 查询 Composer 输入历史
+app.get('/api/input-history', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.listInputHistory({
+      project: req.query.project || '',
+      channelIndex: req.query.channel,
+      limit: req.query.limit,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/input-history — 保存明确提交的 Composer 输入
+app.post('/api/input-history', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const item = nexusStore.addInputHistory({
+      project: req.body?.project || '',
+      channelIndex: req.body?.channelIndex ?? req.body?.channel_index ?? 0,
+      text: req.body?.text || '',
+    })
+    res.json({ ok: true, item })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/composer-drafts — 读取项目/频道草稿
+app.get('/api/composer-drafts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.getComposerDraft({
+      project: req.query.project || '',
+      channelIndex: req.query.channel,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PUT /api/composer-drafts — 保存项目/频道草稿
+app.put('/api/composer-drafts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.saveComposerDraft({
+      project: req.body?.project || '',
+      channelIndex: req.body?.channelIndex ?? req.body?.channel_index ?? 0,
+      text: req.body?.text || '',
+      cursorPos: req.body?.cursorPos ?? req.body?.cursor_pos ?? 0,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/composer-drafts — 清除项目/频道草稿
+app.delete('/api/composer-drafts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const deleted = nexusStore.clearComposerDraft({
+      project: req.query.project || req.body?.project || '',
+      channelIndex: req.query.channel ?? req.body?.channelIndex ?? req.body?.channel_index ?? 0,
+    })
+    res.json({ ok: true, deleted })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/attention-events — 查询未处理/全部注意力事件
+app.get('/api/attention-events', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.listAttentionEvents({
+      status: req.query.status || 'unresolved',
+      project: req.query.project,
+      channelIndex: req.query.channel,
+      limit: req.query.limit,
+    }))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/attention-events/count — 未处理事件计数
+app.get('/api/attention-events/count', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json({ count: nexusStore.countAttentionEvents({ status: req.query.status || 'unresolved' }) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PATCH /api/attention-events/:id — 更新事件状态（seen/resolved/dismissed）
+app.patch('/api/attention-events/:id', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const status = req.body?.status
+    if (!status) return res.status(400).json({ error: 'status required' })
+    res.json(nexusStore.updateAttentionEventStatus(req.params.id, status))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/attention-events/:id/resolve', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.updateAttentionEventStatus(req.params.id, 'resolved'))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/attention-events/:id/dismiss', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.updateAttentionEventStatus(req.params.id, 'dismissed'))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
 
 // POST /api/windows — F-19: 项目-窗口两级结构
 // body: { rel_path?, shell_type?, profile? }
@@ -328,6 +525,14 @@ app.delete('/api/configs/:id', authMiddleware, (req, res) => {
 // GET /api/toolbar-config — 读取工具栏配置
 app.get('/api/toolbar-config', authMiddleware, (req, res) => {
   try {
+    if (nexusStore) {
+      try {
+        const stored = nexusStore.getToolbarConfig(req.query.device_type || 'legacy');
+        if (stored) return res.json(stored);
+      } catch (err) {
+        console.warn('[Nexus] SQLite toolbar read failed; falling back to toolbar-config.json:', err.message);
+      }
+    }
     if (!existsSync(TOOLBAR_CONFIG_FILE)) return res.json(null);
     const data = readFileSync(TOOLBAR_CONFIG_FILE, 'utf8');
     res.json(JSON.parse(data));
@@ -339,12 +544,60 @@ app.get('/api/toolbar-config', authMiddleware, (req, res) => {
 // POST /api/toolbar-config — 保存工具栏配置
 app.post('/api/toolbar-config', authMiddleware, (req, res) => {
   try {
+    if (nexusStore) {
+      try {
+        nexusStore.saveToolbarConfig(req.body, req.query.device_type || 'legacy');
+      } catch (err) {
+        console.warn('[Nexus] SQLite toolbar write failed; still writing toolbar-config.json:', err.message);
+      }
+    }
     writeFileSync(TOOLBAR_CONFIG_FILE, JSON.stringify(req.body), 'utf8');
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// GET /api/toolbar-layouts — 按设备类型列出工具栏布局
+app.get('/api/toolbar-layouts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const deviceType = req.query.device_type || 'legacy'
+    res.json({
+      deviceType,
+      layouts: nexusStore.listToolbarLayouts(deviceType),
+      recommendations: nexusStore.getShortcutRecommendations(deviceType),
+    })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// POST /api/toolbar-layouts — 保存当前设备类型 active layout
+app.post('/api/toolbar-layouts', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const { device_type = 'legacy', name = 'Custom layout', config } = req.body || {}
+    const saved = nexusStore.saveToolbarConfig(config || req.body, device_type, name)
+    res.json({ ok: true, config: saved })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// POST /api/shortcut-usage — 记录快捷键使用统计（不记录输入内容）
+app.post('/api/shortcut-usage', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const usage = nexusStore.recordShortcutUsage({
+      keyId: req.body?.key_id || req.body?.keyId,
+      deviceType: req.body?.device_type || req.body?.deviceType || 'legacy',
+    })
+    res.json({ ok: true, usage })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
 
 // GET /api/version — 当前版本号及工作区状态
 app.get('/api/version', authMiddleware, (req, res) => {
@@ -1464,6 +1717,13 @@ app.post('/api/sessions/:id/attach', authMiddleware, (req, res) => {
 // ---- Tasks API (F-13: claude -p 非交互派发) ----
 
 function loadTasks() {
+  if (nexusStore) {
+    try {
+      return nexusStore.listTasks(MAX_TASKS)
+    } catch (err) {
+      console.warn('[Nexus] SQLite task read failed; falling back to tasks.json:', err.message)
+    }
+  }
   try {
     if (existsSync(TASKS_FILE)) {
       return JSON.parse(readFileSync(TASKS_FILE, 'utf8'))
@@ -1472,11 +1732,16 @@ function loadTasks() {
   return []
 }
 
-const MAX_TASKS = 200
-
 function saveTasks(tasks) {
   // 保留最新的 MAX_TASKS 条，防止文件无限增长
   const trimmed = tasks.length > MAX_TASKS ? tasks.slice(-MAX_TASKS) : tasks
+  if (nexusStore) {
+    try {
+      nexusStore.replaceTasks(trimmed, MAX_TASKS)
+    } catch (err) {
+      console.warn('[Nexus] SQLite task write failed; still writing tasks.json:', err.message)
+    }
+  }
   writeFileSync(TASKS_FILE, JSON.stringify(trimmed, null, 2))
 }
 
@@ -1541,12 +1806,25 @@ function runTask(prompt, cwd, opts = {}) {
 
   child.on('close', (code) => {
     const status = code === 0 ? 'success' : 'error'
+    const summary = shortAttentionSummary(status === 'success' ? output : (errorOutput || output))
     updateTask(taskId, {
       status,
       output: output.slice(-10000),
       error: errorOutput.slice(-1000),
       completedAt: new Date().toISOString(),
       exitCode: code,
+    })
+    recordAttentionEvent({
+      type: status === 'success' ? 'task-success' : 'task-error',
+      project: tmuxSession || TMUX_SESSION,
+      channelIndex: null,
+      taskId,
+      summary: summary || `${status} (exit ${code ?? 'unknown'})`,
+      metadata: {
+        source,
+        sessionName: sessionName || '',
+        exitCode: code,
+      },
     })
     onDone?.({ taskId, status, output, errorOutput, exitCode: code })
   })
@@ -2101,6 +2379,12 @@ try {
   if (changed) saveTasks(staleTasks)
 } catch {}
 
+try {
+  if (nexusStore) nexusStore.cleanupInputHistory()
+} catch (err) {
+  console.warn('[Nexus] Input history cleanup failed:', err.message)
+}
+
 // ---- Channel attention state (F: channel-status-markers) ----
 // Poll every tmux window across every session, classify each into a status,
 // and remember the sticky "needs-confirm" / "done" states until the user
@@ -2189,9 +2473,23 @@ async function attnUpdateChannel(session, index, now) {
   // Sticky transitions (only set here; cleared on "seen").
   if (attnDetectNeedsConfirm(sample)) {
     st.sticky = 'needs-confirm'
+    recordAttentionEvent({
+      type: 'needs-confirm',
+      project: session,
+      channelIndex: index,
+      summary: attnLastNonEmptyLine(sample) || sample,
+      metadata: { source: 'channel-attention' },
+    })
   } else if (st.wasActive && idle && !isShell && st.sticky !== 'needs-confirm') {
     // Falling edge active -> idle with non-shell tail == session finished.
     st.sticky = 'done'
+    recordAttentionEvent({
+      type: 'done',
+      project: session,
+      channelIndex: index,
+      summary: attnLastNonEmptyLine(sample) || sample,
+      metadata: { source: 'channel-attention' },
+    })
   }
   st.wasActive = isActive
 }
@@ -2210,6 +2508,13 @@ function attnReportedStatus(session, index) {
 function attnClear(session, index) {
   const st = channelAttention.get(ptyKey(session, index))
   if (st) { st.sticky = null; st.wasActive = false }
+  if (nexusStore) {
+    try {
+      nexusStore.markAttentionSeen({ project: session, channelIndex: index })
+    } catch (err) {
+      console.warn('[Nexus] attention event seen update failed:', err.message)
+    }
+  }
 }
 
 // Async list helper — never blocks the event loop.
