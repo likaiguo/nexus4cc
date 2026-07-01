@@ -64,7 +64,7 @@ Nexus4CC 把任何浏览器变成 **Claude Code** 的指挥中心——同时也
 
 ```bash
 git clone https://github.com/librae8226/nexus4cc.git && cd nexus4cc
-cp .env.example .env          # 设置 JWT_SECRET、ACC_PASSWORD_HASH、WORKSPACE_ROOT
+cp .env.example .env          # 设置 JWT_SECRET、WORKSPACE_ROOT
 npm install && cd frontend && npm install && npm run build && cd ..
 npm start
 # 在任意设备打开 http://localhost:59000 🚀
@@ -85,7 +85,7 @@ npm start
 3. 验证：`pm2 status` 显示 `nexus` 在线 → 打开 `http://localhost:59000`
 
 前置要求：Node.js 20+、tmux。PM2 不存在时会自动全局安装。  
-默认登录密码：`nexus123`（安装完成后可在 `.env` 中修改）。
+默认登录密码：`nexus123`。使用默认密码时登录页会自动填入并可点击眼睛按钮显示/隐藏；登录后可在「设置 → 安全」修改密码，设置自定义密码后登录页不再展示默认密码。
 
 ---
 

@@ -3,7 +3,6 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 import * as pty from 'node-pty';
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcrypt';
 import { createServer } from 'node:http';
 import { exec, spawn, execSync, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -13,23 +12,11 @@ import { readdir, stat as statAsync } from 'fs/promises';
 import https from 'node:https';
 import multer from 'multer';
 import { createNexusStore } from './storage.js';
-
-// 加载 .env 文件（如果存在）
-try {
-  const envPath = join(dirname(fileURLToPath(import.meta.url)), '.env');
-  const lines = readFileSync(envPath, 'utf8').split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const idx = trimmed.indexOf('=');
-    if (idx === -1) continue;
-    const key = trimmed.slice(0, idx).trim();
-    const val = trimmed.slice(idx + 1).trim();
-    if (key && !(key in process.env)) process.env[key] = val;
-  }
-} catch { /* .env 不存在时忽略 */ }
+import { createPasswordManager, loadEnvFile } from './authPassword.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ENV_FILE = join(__dirname, '.env');
+loadEnvFile(ENV_FILE);
 
 // 持久化数据目录（通过 Docker volume 挂载，重建容器不丢失）
 const DATA_DIR = join(__dirname, 'data');
@@ -96,6 +83,11 @@ if (!JWT_SECRET || !ACC_PASSWORD_HASH) {
   console.error('ERROR: JWT_SECRET and ACC_PASSWORD_HASH must be set in environment');
   process.exit(1);
 }
+
+const passwordManager = createPasswordManager({
+  envPath: ENV_FILE,
+  initialHash: ACC_PASSWORD_HASH,
+});
 
 function commandExists(cmd) {
   try {
@@ -170,12 +162,31 @@ app.post('/api/auth/login', async (req, res) => {
   const { password } = req.body || {};
   if (!password) return res.status(400).json({ error: 'password required' });
   try {
-    const ok = await bcrypt.compare(password, ACC_PASSWORD_HASH);
+    const ok = await passwordManager.verify(password);
     if (!ok) return res.status(401).json({ error: 'unauthorized' });
     const token = jwt.sign({}, JWT_SECRET, { expiresIn: '30d' });
     res.json({ token });
   } catch (err) {
     res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.get('/api/auth/status', async (_req, res) => {
+  try {
+    res.json(await passwordManager.status());
+  } catch {
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/auth/password', authMiddleware, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  try {
+    const result = await passwordManager.updatePassword(currentPassword, newPassword);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'failed to persist password' });
   }
 });
 
