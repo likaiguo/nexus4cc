@@ -19,6 +19,7 @@ const LANGUAGES = [
 const UPDATE_CMD = 'git pull && cd frontend && npm run build && cd .. && pm2 restart nexus'
 
 type UpdateStatus = 'idle' | 'checking' | 'upToDate' | 'available' | 'dirty' | 'error'
+type PasswordStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 export default function GeneralSettings({ token, themeMode, onToggleTheme, onClose, onOpenApiConfig }: Props) {
   const { t, i18n } = useTranslation()
@@ -31,6 +32,11 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
   const [inputHistoryRetentionDays, setInputHistoryRetentionDays] = useState(30)
   const [historySaved, setHistorySaved] = useState(false)
   const [historyCleared, setHistoryCleared] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordStatus, setPasswordStatus] = useState<PasswordStatus>('idle')
+  const [passwordError, setPasswordError] = useState('')
 
   useEffect(() => {
     fetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
@@ -116,10 +122,42 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
     } catch {}
   }
 
+  async function handlePasswordChange(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setPasswordError('')
+    if (newPassword !== confirmPassword) {
+      setPasswordStatus('error')
+      setPasswordError(t('settings.passwordMismatch'))
+      return
+    }
+    setPasswordStatus('saving')
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => null)
+        setPasswordStatus('error')
+        setPasswordError(data?.error || t('settings.passwordChangeFailed'))
+        return
+      }
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setPasswordStatus('saved')
+      setTimeout(() => setPasswordStatus('idle'), 1800)
+    } catch {
+      setPasswordStatus('error')
+      setPasswordError(t('settings.passwordChangeFailed'))
+    }
+  }
+
   return (
     <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-5">
       <GhostShield />
-      <div className="bg-nexus-bg border border-nexus-border rounded-xl flex flex-col text-nexus-text w-full max-w-[400px] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
+      <div className="bg-nexus-bg border border-nexus-border rounded-xl flex flex-col text-nexus-text w-full max-w-[400px] max-h-[calc(100dvh-40px)] shadow-[0_20px_60px_rgba(0,0,0,0.5)] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-nexus-border">
           <span className="text-base font-semibold">{t('settings.title')}</span>
@@ -131,7 +169,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
           </button>
         </div>
 
-        <div className="px-4 py-4 flex flex-col gap-5">
+        <div className="px-4 py-4 flex flex-col gap-5 overflow-y-auto">
           {/* Appearance section */}
           <div>
             <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-3">
@@ -170,6 +208,47 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
                 </button>
               </div>
             </div>
+          </div>
+
+          <div className="border-t border-nexus-border pt-4">
+            <div className="text-[11px] text-nexus-text-2 tracking-wider uppercase mb-3">
+              {t('settings.security')}
+            </div>
+            <form className="flex flex-col gap-2.5" onSubmit={handlePasswordChange}>
+              <input
+                type="password"
+                value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)}
+                placeholder={t('settings.currentPassword')}
+                className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-2 outline-none"
+              />
+              <input
+                type="password"
+                value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
+                placeholder={t('settings.newPassword')}
+                className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-2 outline-none"
+              />
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                placeholder={t('settings.confirmPassword')}
+                className="bg-nexus-bg-2 border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-2 outline-none"
+              />
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="submit"
+                  disabled={passwordStatus === 'saving'}
+                  className="flex items-center gap-1.5 bg-transparent border border-nexus-border rounded-md text-nexus-text text-sm px-3 py-2 cursor-pointer disabled:opacity-50"
+                >
+                  <Icon name="save" size={14} />
+                  <span>{passwordStatus === 'saving' ? t('settings.passwordSaving') : t('settings.changePassword')}</span>
+                </button>
+                {passwordStatus === 'saved' && <span className="text-xs text-nexus-success">{t('settings.passwordChanged')}</span>}
+                {passwordStatus === 'error' && <span className="text-xs text-nexus-error">{passwordError}</span>}
+              </div>
+            </form>
           </div>
 
           {/* Privacy section */}

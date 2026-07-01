@@ -10,7 +10,7 @@ export type IconName =
   | 'chevronUp' | 'chevronLeft' | 'chevronRight' | 'grip' | 'trash' | 'plus' | 'copy'
   | 'arrowDown' | 'arrowLeft' | 'arrowRight' | 'message'
   | 'play' | 'stop' | 'refresh' | 'history' | 'pin' | 'folder'
-  | 'folderPlus' | 'folderOpen' | 'image' | 'alert' | 'eye' | 'download' | 'file' | 'edit' | 'save' | 'sort'
+  | 'folderPlus' | 'folderOpen' | 'image' | 'alert' | 'eye' | 'eyeOff' | 'download' | 'file' | 'edit' | 'save' | 'sort'
 
 interface Props {
   name: IconName
@@ -176,6 +176,14 @@ const ICONS: Record<IconName, React.ReactNode> = {
     <g>
       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
       <circle cx="12" cy="12" r="3" />
+    </g>
+  ),
+  eyeOff: (
+    <g>
+      <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20C5 20 1 12 1 12a21.77 21.77 0 0 1 5.06-5.94" />
+      <path d="M9.9 4.24A10.71 10.71 0 0 1 12 4c7 0 11 8 11 8a21.92 21.92 0 0 1-2.16 3.19" />
+      <path d="M14.12 14.12a3 3 0 0 1-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
     </g>
   ),
   download: (

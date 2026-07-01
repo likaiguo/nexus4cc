@@ -2597,9 +2597,9 @@ export default function Terminal({ token }: Props) {
                     </button>
 
                     <button
-                      onClick={(e) => { e.stopPropagation(); setShowSessionManagerV2(true); }}
+                      onClick={(e) => { e.stopPropagation(); setShowGeneralSettings(true); }}
                       className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
-                      title="配置管理"
+                      title={t('toolbar.settings')}
                     >
                       <Icon name="settings" size={18} />
                     </button>

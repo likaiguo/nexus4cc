@@ -67,10 +67,7 @@ WORKSPACE_ROOT=/home/yourname/work
 CLAUDE_PROXY=http://127.0.0.1:6789
 ```
 
-> ⚠️ **生产环境**请修改密码和 JWT_SECRET。生成新密码 hash：
-> ```bash
-> node -e "const b=require('bcrypt');b.hash('yourpassword',12).then(h=>console.log(h))"
-> ```
+> ⚠️ **生产环境**请修改密码和 JWT_SECRET。使用默认密码时登录页会自动填入 **`nexus123`**，并可点击眼睛按钮显示/隐藏；登录后在「设置 → 安全」直接修改密码。设置自定义密码后，登录页不再展示默认密码。
 
 ---
 

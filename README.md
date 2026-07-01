@@ -66,7 +66,7 @@
 
 ```bash
 git clone https://github.com/librae8226/nexus4cc.git && cd nexus4cc
-cp .env.example .env          # set JWT_SECRET, ACC_PASSWORD_HASH, WORKSPACE_ROOT
+cp .env.example .env          # set JWT_SECRET, WORKSPACE_ROOT
 npm install && cd frontend && npm install && npm run build && cd ..
 npm start
 # Open http://localhost:59000 on any device 🚀
@@ -85,7 +85,7 @@ If you're an AI assistant helping a user install Nexus, follow this path:
 3. Verify: `pm2 status` shows `nexus` online → open `http://localhost:59000`
 
 Prerequisites: Node.js 20+, tmux. PM2 is installed automatically if missing.  
-Default login password: `nexus123` (user can change it in `.env` after setup).
+Default login password: `nexus123`. While the default is active, the login page pre-fills it and lets you show or hide it with the eye button; after login, change it in Settings → Security. Once a custom password is set, the login page no longer displays the default password.
 
 ---
 
