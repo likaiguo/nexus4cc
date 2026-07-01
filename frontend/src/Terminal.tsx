@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, lazy, Suspense } from 'react'
+import { useEffect, useRef, useCallback, useState, lazy, Suspense, startTransition } from 'react'
 import type { SessionManagerV2Handle } from './SessionManagerV2'
 import type { WorkspaceBrowserHandle } from './WorkspaceBrowser'
 import { useTranslation } from 'react-i18next'
@@ -379,6 +379,7 @@ export default function Terminal({ token }: Props) {
   const composerModeRef = useRef<ComposerMode>('direct')
   const composerImeRef = useRef(false)
   const composerScopeRef = useRef<{ project: string; channelIndex: number } | null>(null)
+  const projectSwitchSeqRef = useRef(0)
   const composerDraftRef = useRef('')
   const composerCursorRef = useRef(0)
   const composerDraftDirtyRef = useRef(false)
@@ -707,7 +708,8 @@ export default function Terminal({ token }: Props) {
     markChannelSeenRemote(project, channelIndex)
   }, [markChannelSeenRemote, token])
 
-  const applyResolvedLocation = useCallback((project: string, channelIndex: number, resolvedWindows?: TmuxWindow[]) => {
+  const applyResolvedLocation = useCallback((project: string, channelIndex: number, resolvedWindows?: TmuxWindow[], options: { syncUrl?: boolean } = {}) => {
+    const { syncUrl: shouldSyncUrl = true } = options
     const idx = normalizeChannelIndex(channelIndex)
     localStorage.setItem('nexus_session', project)
     localStorage.setItem(WINDOW_KEY, String(idx))
@@ -723,7 +725,7 @@ export default function Terminal({ token }: Props) {
     windowsInitializedRef.current = true
     windowsLoadedRef.current = true
     setWindowsLoaded(true)
-    syncLocationUrl(project, idx)
+    if (shouldSyncUrl) syncLocationUrl(project, idx)
   }, [syncLocationUrl])
 
   const handleCopyCurrentLocation = useCallback(async () => {
@@ -1430,63 +1432,25 @@ export default function Terminal({ token }: Props) {
 
   async function handleSwitchSession(newSession: string, lastChannel?: number | null, options: { syncUrl?: boolean } = {}) {
     const { syncUrl = true } = options
-    localStorage.setItem('nexus_session', newSession)
-    // 同步更新 ref，确保 fetch 能立即读到新 session
-    activeTmuxSessionRef.current = newSession
-    setActiveTmuxSession(newSession)
-    // 重置窗口状态
-    setWindows([])
-    windowsInitializedRef.current = false
-    windowsLoadedRef.current = false
-    setWindowsLoaded(false)
-
-    // 先获取新 session 的实际窗口列表，验证 lastChannel 是否存在，
-    // 避免 WebSocket 连接到错误窗口（server 端 ensureWindowPty 的静默 fallback）
-    try {
-      const r = await fetch(`/api/sessions?session=${encodeURIComponent(newSession)}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      if (r.ok) {
-        const d = await r.json()
-        const wins: TmuxWindow[] = d.windows ?? []
-        setWindows(wins)
-        windowsLoadedRef.current = true
-        setWindowsLoaded(true)
-        windowsInitializedRef.current = true
-
-        // 确定正确的目标窗口：
-        // 1. 优先使用 lastChannel（如果在新 session 中仍然存在）
-        // 2. 否则回退到 tmux 的活跃窗口
-        // 3. 兜底为 0
-        let target = 0
-        if (lastChannel != null && wins.some(w => w.index === lastChannel)) {
-          target = lastChannel
-        } else {
-          const active = wins.find(w => w.active)
-          if (active) target = active.index
-        }
-
-        setActiveWindowIndex(target)
-        activeWindowIndexRef.current = target
-        localStorage.setItem(WINDOW_KEY, String(target))
-        if (syncUrl) syncLocationUrl(newSession, target)
-        // 强制 WebSocket 重连到验证后的窗口
-        setWsSessionKey(newSession)
-        return
+    const switchSeq = ++projectSwitchSeqRef.current
+    ;(async () => {
+      try {
+        const activatedChannel = await activateProject(newSession).catch(() => null)
+        const preferredChannel = lastChannel !== undefined && lastChannel !== null
+          ? normalizeChannelIndex(lastChannel)
+          : activatedChannel
+        if (switchSeq !== projectSwitchSeqRef.current) return
+        const wins = await fetchWindowList(newSession)
+        if (switchSeq !== projectSwitchSeqRef.current) return
+        const targetChannel = resolveChannelIndex(wins, preferredChannel)
+        await attachResolvedChannel(newSession, targetChannel)
+        if (switchSeq !== projectSwitchSeqRef.current) return
+        applyResolvedLocation(newSession, targetChannel, wins, { syncUrl })
+      } catch {
+        if (switchSeq !== projectSwitchSeqRef.current) return
+        fetchWindows()
       }
-    } catch {}
-
-    // fetch 失败时的兜底：使用 lastChannel 或 0，延迟重试
-    const fallbackChannel = lastChannel !== undefined && lastChannel !== null ? normalizeChannelIndex(lastChannel) : 0
-    setActiveWindowIndex(fallbackChannel)
-    activeWindowIndexRef.current = fallbackChannel
-    if (lastChannel != null) localStorage.setItem(WINDOW_KEY, String(fallbackChannel))
-    else localStorage.removeItem(WINDOW_KEY)
-    if (syncUrl) syncLocationUrl(newSession, fallbackChannel)
-    setWsSessionKey(newSession)
-    setTimeout(() => {
-      if (activeTmuxSessionRef.current === newSession) fetchWindows()
-    }, 100)
+    })()
   }
 
   const handleAttentionJump = useCallback((project: string, channelIndex?: number | null) => {
@@ -2341,6 +2305,12 @@ export default function Terminal({ token }: Props) {
     const saved = localStorage.getItem('nexus_sidebar_collapsed')
     return saved !== null ? saved === 'true' : true // default collapsed
   })
+  const setSidebarCollapsedPersisted = useCallback((collapsed: boolean) => {
+    localStorage.setItem('nexus_sidebar_collapsed', String(collapsed))
+    startTransition(() => {
+      setSidebarCollapsed(collapsed)
+    })
+  }, [])
   // Resizable sidebar width (expanded only); drag the divider to adjust.
   const SIDEBAR_MIN = 160
   const SIDEBAR_MAX = 560
@@ -2582,7 +2552,7 @@ export default function Terminal({ token }: Props) {
                 >
                   {/* Expand button at top */}
                   <button
-                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(false); localStorage.setItem('nexus_sidebar_collapsed', 'false'); }}
+                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsedPersisted(false) }}
                     className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer shrink-0"
                     title="展开侧边栏"
                   >
@@ -2701,7 +2671,7 @@ export default function Terminal({ token }: Props) {
                 <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
                   {/* Collapse button in header area */}
                   <button
-                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsed(true); localStorage.setItem('nexus_sidebar_collapsed', 'true'); }}
+                    onClick={(e) => { e.stopPropagation(); setSidebarCollapsedPersisted(true) }}
                     className="absolute top-1 right-1 z-50 w-7 h-7 flex items-center justify-center rounded cursor-pointer bg-nexus-bg/80 border border-nexus-border text-nexus-text-2 hover:bg-nexus-bg transition-colors"
                     title="收起侧边栏"
                   >
@@ -2710,19 +2680,21 @@ export default function Terminal({ token }: Props) {
                   <div
                     className="flex-1 min-h-0 overflow-hidden"
                   >
-                    <SessionManagerV2
-                      ref={sessionManagerRef}
-                      token={token}
-                      currentProject={activeTmuxSession}
-                      currentChannelIndex={activeWindowIndex}
-                      onClose={() => {}}
-                      onSwitchProject={(name) => handleSwitchSession(name)}
-                      onSwitchChannel={(idx) => attachToWindow(idx)}
-                      onNewProject={openNewSessionDialog}
-                      onNewChannel={handleCreateWindow}
-                      onCloseEditor={() => workspaceBrowserRef.current?.closeEditor()}
-                      layout="sidebar"
-                    />
+                    <Suspense fallback={<div className="px-3 py-3 text-xs text-nexus-text-2">{t('common.loading')}</div>}>
+                      <SessionManagerV2
+                        ref={sessionManagerRef}
+                        token={token}
+                        currentProject={activeTmuxSession}
+                        currentChannelIndex={activeWindowIndex}
+                        onClose={() => {}}
+                        onSwitchProject={(name, lastChannel) => handleSwitchSession(name, lastChannel)}
+                        onSwitchChannel={(idx) => attachToWindow(idx)}
+                        onNewProject={openNewSessionDialog}
+                        onNewChannel={handleCreateWindow}
+                        onCloseEditor={() => workspaceBrowserRef.current?.closeEditor()}
+                        layout="sidebar"
+                      />
+                    </Suspense>
                   </div>
                   <div className="border-t border-nexus-border shrink-0 px-2 py-1.5">
                     <button
