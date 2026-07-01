@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import {
+  buildClearedWorkspaceBrowserUrl,
   buildProjectChannelUrl,
+  buildWorkspaceBrowserUrl,
   normalizeChannelIndex,
   parseProjectChannelLocation,
+  parseWorkspaceBrowserLocation,
 } from './src/shareableLocation'
 
 let passed = 0
@@ -90,6 +93,45 @@ test('normalizeChannelIndex floors valid numbers and falls back for invalid valu
   assert.equal(normalizeChannelIndex('5'), 5)
   assert.equal(normalizeChannelIndex(-1), 0)
   assert.equal(normalizeChannelIndex('bad'), 0)
+})
+
+test('buildWorkspaceBrowserUrl opens workspace panel and preserves project channel state', () => {
+  const url = buildWorkspaceBrowserUrl({
+    baseUrl: 'https://nexus.local/?project=alpha&channel=2#term',
+    path: '/workspace/app',
+  })
+  assert.equal(url, 'https://nexus.local/?project=alpha&channel=2&panel=workspace&workspacePath=%2Fworkspace%2Fapp#term')
+})
+
+test('buildWorkspaceBrowserUrl strips credentials from main page URL', () => {
+  const url = buildWorkspaceBrowserUrl({
+    baseUrl: 'https://nexus.local/?token=secret&ws_token=secret2&password=pw&project=alpha',
+    path: '/workspace',
+  })
+  const parsed = new URL(url)
+  assert.equal(parsed.searchParams.get('token'), null)
+  assert.equal(parsed.searchParams.get('ws_token'), null)
+  assert.equal(parsed.searchParams.get('password'), null)
+  assert.equal(parsed.searchParams.get('project'), 'alpha')
+  assert.equal(parsed.searchParams.get('panel'), 'workspace')
+  assert.equal(parsed.searchParams.get('workspacePath'), '/workspace')
+})
+
+test('parseWorkspaceBrowserLocation reads workspace panel and decoded path', () => {
+  assert.deepEqual(
+    parseWorkspaceBrowserLocation('https://nexus.local/?panel=workspace&workspacePath=%2Fworkspace%2F%E9%A1%B9%E7%9B%AE'),
+    {
+      panel: 'workspace',
+      workspacePath: '/workspace/项目',
+      isWorkspaceOpen: true,
+      hasWorkspacePath: true,
+    },
+  )
+})
+
+test('buildClearedWorkspaceBrowserUrl removes workspace panel without changing project channel', () => {
+  const url = buildClearedWorkspaceBrowserUrl('https://nexus.local/?project=alpha&channel=2&panel=workspace&workspacePath=%2Fworkspace')
+  assert.equal(url, 'https://nexus.local/?project=alpha&channel=2')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -12,8 +12,23 @@ export interface BuildProjectChannelUrlOptions {
   channel: number
 }
 
+export interface WorkspaceBrowserLocation {
+  panel: string | null
+  workspacePath: string | null
+  isWorkspaceOpen: boolean
+  hasWorkspacePath: boolean
+}
+
+export interface BuildWorkspaceBrowserUrlOptions {
+  baseUrl: string | URL
+  path?: string | null
+}
+
 const PROJECT_PARAM = 'project'
 const CHANNEL_PARAM = 'channel'
+const PANEL_PARAM = 'panel'
+const WORKSPACE_PATH_PARAM = 'workspacePath'
+const WORKSPACE_PANEL = 'workspace'
 
 const SENSITIVE_QUERY_KEYS = new Set([
   'token',
@@ -57,12 +72,69 @@ export function buildProjectChannelUrl({ baseUrl, project, channel }: BuildProje
   return url.toString()
 }
 
+export function parseWorkspaceBrowserLocation(input: string | URL = window.location.href): WorkspaceBrowserLocation {
+  const url = toUrl(input)
+  const panel = url.searchParams.get(PANEL_PARAM)
+  const rawPath = url.searchParams.get(WORKSPACE_PATH_PARAM)
+  const workspacePath = rawPath && rawPath.trim() ? rawPath : null
+
+  return {
+    panel,
+    workspacePath,
+    isWorkspaceOpen: panel === WORKSPACE_PANEL,
+    hasWorkspacePath: rawPath !== null,
+  }
+}
+
+export function buildWorkspaceBrowserUrl({ baseUrl, path }: BuildWorkspaceBrowserUrlOptions): string {
+  const url = toUrl(baseUrl)
+  stripSensitiveParams(url.searchParams)
+  url.searchParams.set(PANEL_PARAM, WORKSPACE_PANEL)
+  if (path && path.trim()) {
+    url.searchParams.set(WORKSPACE_PATH_PARAM, path)
+  } else {
+    url.searchParams.delete(WORKSPACE_PATH_PARAM)
+  }
+  return url.toString()
+}
+
+export function buildClearedWorkspaceBrowserUrl(baseUrl: string | URL): string {
+  const url = toUrl(baseUrl)
+  stripSensitiveParams(url.searchParams)
+  if (url.searchParams.get(PANEL_PARAM) === WORKSPACE_PANEL) {
+    url.searchParams.delete(PANEL_PARAM)
+  }
+  url.searchParams.delete(WORKSPACE_PATH_PARAM)
+  return url.toString()
+}
+
 export function replaceProjectChannelUrl(project: string, channel: number, win: Window = window): string {
   const nextUrl = buildProjectChannelUrl({
     baseUrl: win.location.href,
     project,
     channel,
   })
+  const currentUrl = win.location.href
+  if (nextUrl !== currentUrl) {
+    win.history.replaceState(win.history.state, '', nextUrl)
+  }
+  return nextUrl
+}
+
+export function replaceWorkspaceBrowserUrl(path?: string | null, win: Window = window): string {
+  const nextUrl = buildWorkspaceBrowserUrl({
+    baseUrl: win.location.href,
+    path,
+  })
+  const currentUrl = win.location.href
+  if (nextUrl !== currentUrl) {
+    win.history.replaceState(win.history.state, '', nextUrl)
+  }
+  return nextUrl
+}
+
+export function clearWorkspaceBrowserUrl(win: Window = window): string {
+  const nextUrl = buildClearedWorkspaceBrowserUrl(win.location.href)
   const currentUrl = win.location.href
   if (nextUrl !== currentUrl) {
     win.history.replaceState(win.history.state, '', nextUrl)

@@ -16,6 +16,7 @@ interface Props {
   onClose: () => void
   initialPath?: string
   currentSession?: string
+  onPathChange?: (path: string) => void
 }
 
 function formatSize(bytes?: number): string {
@@ -30,7 +31,7 @@ function formatTime(ts: number): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
 }
 
-export default function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession }: Props) {
+export default function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, onPathChange }: Props) {
   const { t } = useTranslation()
   const [workspaceRoot, setWorkspaceRoot] = useState('')
 
@@ -147,6 +148,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       const data = await r.json()
       // data.path 是服务端返回的规范化绝对路径
       setCurrentPath(data.path)
+      onPathChange?.(data.path)
       // Phase 1：先用 mtime 渲染列表（size 列占位）
       setEntries((data.entries || []).map((e: FileEntry) => ({ ...e, size: undefined })))
       setLoading(false)
@@ -164,7 +166,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       setEntries([])
       setLoading(false)
     }
-  }, [token])
+  }, [token, onPathChange])
 
   // 当 currentPath 确定后加载内容
   useEffect(() => {
