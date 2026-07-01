@@ -1298,37 +1298,76 @@ end run`
 // ========== F-20: Project-Channel API ==========
 // Project = tmux session, Channel = tmux window (within a session)
 
+function parseTmuxSessionLine(line) {
+  const [name, windows, attached] = line.split('|')
+  let path = ''
+  try {
+    const envOutput = execFileSync('tmux', ['show-environment', '-t', name, 'NEXUS_CWD'], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
+    if (match) path = match[1]
+  } catch {}
+  if (!path && windows !== '0') {
+    try {
+      const cwdOutput = execFileSync('tmux', ['list-windows', '-t', name, '-F', '#{pane_current_path}'], { encoding: 'utf8', stdio: 'pipe' })
+        .trim()
+        .split('\n')
+        .filter(Boolean)[0]
+      if (cwdOutput) path = cwdOutput
+    } catch {}
+  }
+  return {
+    name,
+    path: path || WORKSPACE_ROOT,
+    active: name === TMUX_SESSION,
+    channelCount: Number(windows) || 0
+  }
+}
+
+function liveProjectsFromTmux(stdout) {
+  const lines = stdout.trim().split('\n').filter(Boolean)
+  const projects = lines.map(parseTmuxSessionLine)
+  projects.reverse()
+  return projects
+}
+
+function parseTmuxWindowLine(line) {
+  const parts = line.split('|')
+  const index = Number(parts[0])
+  const name = parts[1]
+  const active = parts[2]?.trim() === '1'
+  const cwd = parts.slice(3).join(':') || ''
+  return { index, name, active, cwd }
+}
+
+function liveChannelsFromTmux(stdout) {
+  const lines = stdout.trim().split('\n').filter(Boolean)
+  const channels = lines.map(parseTmuxWindowLine)
+  channels.reverse()
+  return channels
+}
+
 // GET /api/projects — 列出所有 Projects（tmux sessions）
 app.get('/api/projects', authMiddleware, (req, res) => {
   exec('tmux list-sessions -F "#{session_name}|#{session_windows}|#{session_attached}"', (err, stdout) => {
     if (err) return res.json([])
-    const lines = stdout.trim().split('\n').filter(Boolean)
-    const projects = lines.map(line => {
-      const [name, windows, attached] = line.split('|')
-      // 尝试读取 NEXUS_CWD
-      let path = ''
-      try {
-        const envOutput = execSync(`tmux show-environment -t ${name} NEXUS_CWD 2>/dev/null`).toString().trim()
-        const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
-        if (match) path = match[1]
-      } catch {}
-      // 没有 NEXUS_CWD，尝试取第一个 window 的 pane_current_path
-      if (!path && windows !== '0') {
-        try {
-          const cwdOutput = execSync(`tmux list-windows -t ${name} -F '#{pane_current_path}' 2>/dev/null | head -1`).toString().trim()
-          if (cwdOutput) path = cwdOutput
-        } catch {}
-      }
-      return {
-        name,
-        path: path || WORKSPACE_ROOT,
-        active: name === TMUX_SESSION,
-        channelCount: Number(windows) || 0
-      }
-    })
-    projects.reverse()
-    res.json(projects)
+    const projects = liveProjectsFromTmux(stdout)
+    res.json(nexusStore?.orderProjects ? nexusStore.orderProjects(projects) : projects)
   })
+})
+
+// PATCH /api/project-order — 保存 Project 展示顺序
+app.patch('/api/project-order', authMiddleware, (req, res) => {
+  try {
+    const { order } = req.body || {}
+    const stdout = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}|#{session_windows}|#{session_attached}'], { encoding: 'utf8', stdio: 'pipe' })
+    const projects = liveProjectsFromTmux(stdout)
+    const liveNames = projects.map(project => project.name)
+    const savedOrder = nexusStore?.saveProjectOrder ? nexusStore.saveProjectOrder(order, liveNames) : []
+    const orderedProjects = nexusStore?.orderProjects ? nexusStore.orderProjects(projects) : projects
+    res.json({ ok: true, persisted: Boolean(nexusStore?.saveProjectOrder), order: savedOrder, projects: orderedProjects })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
 })
 
 // GET /api/session-cwd — 获取指定 session 的 NEXUS_CWD
@@ -1362,20 +1401,27 @@ app.get('/api/projects/:name/channels', authMiddleware, (req, res) => {
     `tmux list-windows -t ${sessionName} -F "#{window_index}|#{window_name}|#{window_active}|#{pane_current_path}"`,
     (err, stdout) => {
       if (err) return res.status(500).json({ error: err.message })
-      const lines = stdout.trim().split('\n').filter(Boolean)
-      const channels = lines.map(line => {
-        const parts = line.split('|')
-        const index = Number(parts[0])
-        const name = parts[1]
-        const active = parts[2]?.trim() === '1'
-        const cwd = parts.slice(3).join(':') || ''
-        return { index, name, active, cwd }
-      })
-      // 新创建的频道排在上面
-      channels.reverse()
-      res.json({ project: sessionName, channels })
+      const channels = liveChannelsFromTmux(stdout)
+      const orderedChannels = nexusStore?.orderChannels ? nexusStore.orderChannels(sessionName, channels) : channels
+      res.json({ project: sessionName, channels: orderedChannels })
     }
   )
+})
+
+// PATCH /api/projects/:name/channel-order — 保存 Project 内 Channel 展示顺序
+app.patch('/api/projects/:name/channel-order', authMiddleware, (req, res) => {
+  const sessionName = req.params.name
+  try {
+    const { order } = req.body || {}
+    const stdout = execFileSync('tmux', ['list-windows', '-t', sessionName, '-F', '#{window_index}|#{window_name}|#{window_active}|#{pane_current_path}'], { encoding: 'utf8', stdio: 'pipe' })
+    const channels = liveChannelsFromTmux(stdout)
+    const liveIndexes = channels.map(channel => channel.index)
+    const savedOrder = nexusStore?.saveChannelOrder ? nexusStore.saveChannelOrder(sessionName, order, liveIndexes) : []
+    const orderedChannels = nexusStore?.orderChannels ? nexusStore.orderChannels(sessionName, channels) : channels
+    res.json({ ok: true, persisted: Boolean(nexusStore?.saveChannelOrder), project: sessionName, order: savedOrder, channels: orderedChannels })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
 })
 
 // GET /api/channel-status — 聚合返回全部项目所有频道的注意力状态
@@ -1635,6 +1681,11 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
   // 执行重命名
   try {
     execFileSync('tmux', ['rename-session', '-t', oldName, '--', sanitizedNewName], { stdio: 'pipe' })
+    try {
+      nexusStore?.renameProjectOrder?.(oldName, sanitizedNewName)
+    } catch (storeErr) {
+      console.warn('[Nexus] project order rename migration failed:', storeErr.message)
+    }
     res.json({ ok: true, oldName, newName: sanitizedNewName })
   } catch (err) {
     res.status(500).json({ error: err.message })
