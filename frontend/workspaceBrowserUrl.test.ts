@@ -38,7 +38,7 @@ test('terminal opens and closes workspace browser through URL helpers', () => {
   const openSource = sourceBetween(terminalSource, 'const openWorkspaceBrowser = useCallback', 'const closeWorkspaceBrowser = useCallback')
   assert.ok(openSource.includes('setWorkspaceInitialPath(initialPath)'))
   assert.ok(openSource.includes('setShowWorkspace(true)'))
-  assert.ok(openSource.includes('replaceWorkspaceBrowserUrl(initialPath || null)'))
+  assert.ok(openSource.includes('pushWorkspaceBrowserUrl(initialPath || null)'))
 
   const closeSource = sourceBetween(terminalSource, 'const closeWorkspaceBrowser = useCallback', 'const handleWorkspacePathChange = useCallback')
   assert.ok(closeSource.includes("setWorkspaceInitialPath('')"))
@@ -56,6 +56,14 @@ test('terminal passes URL path and receives normalized workspace path changes', 
   assert.ok(pathChangeSource.includes('replaceWorkspaceBrowserUrl(path)'))
   assert.ok(terminalSource.includes('initialPath={workspaceInitialPath}'))
   assert.ok(terminalSource.includes('onPathChange={handleWorkspacePathChange}'))
+})
+
+test('terminal synchronizes workspace browser state on browser history navigation', () => {
+  const popstateSource = sourceBetween(terminalSource, 'useEffect(() => {\n    const handlePopState', 'const markChannelSeenRemote = useCallback')
+  assert.ok(popstateSource.includes('parseWorkspaceBrowserLocation(window.location.href)'))
+  assert.ok(popstateSource.includes('setShowWorkspace(workspaceLocation.isWorkspaceOpen)'))
+  assert.ok(popstateSource.includes("setWorkspaceInitialPath(workspaceLocation.workspacePath || '')"))
+  assert.ok(popstateSource.includes("window.removeEventListener('popstate', handlePopState)"))
 })
 
 test('workspace browser reports server-normalized paths after directory loads', () => {

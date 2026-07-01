@@ -17,6 +17,7 @@ import {
   normalizeChannelIndex,
   parseProjectChannelLocation,
   parseWorkspaceBrowserLocation,
+  pushWorkspaceBrowserUrl,
   replaceProjectChannelUrl,
   replaceWorkspaceBrowserUrl,
   type ProjectChannelLocation,
@@ -690,7 +691,7 @@ export default function Terminal({ token }: Props) {
   const openWorkspaceBrowser = useCallback((initialPath = '') => {
     setWorkspaceInitialPath(initialPath)
     setShowWorkspace(true)
-    replaceWorkspaceBrowserUrl(initialPath || null)
+    pushWorkspaceBrowserUrl(initialPath || null)
   }, [])
 
   const closeWorkspaceBrowser = useCallback(() => {
@@ -702,6 +703,16 @@ export default function Terminal({ token }: Props) {
   const handleWorkspacePathChange = useCallback((path: string) => {
     setWorkspaceInitialPath(path)
     replaceWorkspaceBrowserUrl(path)
+  }, [])
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const workspaceLocation = parseWorkspaceBrowserLocation(window.location.href)
+      setShowWorkspace(workspaceLocation.isWorkspaceOpen)
+      setWorkspaceInitialPath(workspaceLocation.workspacePath || '')
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
   }, [])
 
   const markChannelSeenRemote = useCallback((project: string, channelIndex: number) => {

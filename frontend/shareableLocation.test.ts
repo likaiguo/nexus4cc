@@ -6,6 +6,7 @@ import {
   normalizeChannelIndex,
   parseProjectChannelLocation,
   parseWorkspaceBrowserLocation,
+  pushWorkspaceBrowserUrl,
 } from './src/shareableLocation'
 
 let passed = 0
@@ -132,6 +133,29 @@ test('parseWorkspaceBrowserLocation reads workspace panel and decoded path', () 
 test('buildClearedWorkspaceBrowserUrl removes workspace panel without changing project channel', () => {
   const url = buildClearedWorkspaceBrowserUrl('https://nexus.local/?project=alpha&channel=2&panel=workspace&workspacePath=%2Fworkspace')
   assert.equal(url, 'https://nexus.local/?project=alpha&channel=2')
+})
+
+test('pushWorkspaceBrowserUrl creates an in-app history entry', () => {
+  const calls: Array<{ state: unknown; title: string; url: string }> = []
+  const fakeWindow = {
+    location: { href: 'https://nexus.local/?project=alpha&channel=2' },
+    history: {
+      state: { existing: true },
+      pushState(state: unknown, title: string, url: string) {
+        calls.push({ state, title, url })
+      },
+    },
+  } as unknown as Window
+
+  const url = pushWorkspaceBrowserUrl('/workspace/app', fakeWindow)
+  assert.equal(url, 'https://nexus.local/?project=alpha&channel=2&panel=workspace&workspacePath=%2Fworkspace%2Fapp')
+  assert.deepEqual(calls, [
+    {
+      state: { existing: true },
+      title: '',
+      url: 'https://nexus.local/?project=alpha&channel=2&panel=workspace&workspacePath=%2Fworkspace%2Fapp',
+    },
+  ])
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

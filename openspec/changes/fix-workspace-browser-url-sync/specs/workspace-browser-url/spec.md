@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Workspace browser URL synchronization
-The web client SHALL represent the open workspace browser and its active directory in the current browser URL using stable query parameters. The URL MUST preserve active project/channel parameters and MUST NOT include authentication tokens.
+The web client SHALL represent the open workspace browser and its active directory in the current browser URL using stable query parameters. Opening the workspace browser MUST create an in-app browser history entry, while directory navigation MUST update that entry in place. The URL MUST preserve active project/channel parameters and MUST NOT include authentication tokens.
 
 #### Scenario: Opening workspace browser writes URL state
 - **WHEN** the user opens the workspace browser from the terminal UI
@@ -11,6 +11,11 @@ The web client SHALL represent the open workspace browser and its active directo
 #### Scenario: Directory navigation updates URL
 - **WHEN** the user navigates into a child directory, returns to a parent directory, or clicks a breadcrumb
 - **THEN** the current browser URL SHALL update to the resolved active directory path without adding a new history entry
+
+#### Scenario: Browser back closes workspace browser inside app
+- **WHEN** the user opens the workspace browser and then presses the browser Back button
+- **THEN** the workspace browser SHALL close within the terminal app
+- **AND** the terminal app SHALL remain visible instead of navigating to a blank page
 
 #### Scenario: Closing workspace browser clears URL state
 - **WHEN** the user closes the workspace browser
