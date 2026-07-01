@@ -133,6 +133,18 @@ export function replaceWorkspaceBrowserUrl(path?: string | null, win: Window = w
   return nextUrl
 }
 
+export function pushWorkspaceBrowserUrl(path?: string | null, win: Window = window): string {
+  const nextUrl = buildWorkspaceBrowserUrl({
+    baseUrl: win.location.href,
+    path,
+  })
+  const currentUrl = win.location.href
+  if (nextUrl !== currentUrl) {
+    win.history.pushState(win.history.state, '', nextUrl)
+  }
+  return nextUrl
+}
+
 export function clearWorkspaceBrowserUrl(win: Window = window): string {
   const nextUrl = buildClearedWorkspaceBrowserUrl(win.location.href)
   const currentUrl = win.location.href

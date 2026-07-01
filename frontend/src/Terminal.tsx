@@ -18,6 +18,7 @@ import {
   normalizeChannelIndex,
   parseProjectChannelLocation,
   parseWorkspaceBrowserLocation,
+  pushWorkspaceBrowserUrl,
   replaceProjectChannelUrl,
   replaceWorkspaceBrowserUrl,
   type ProjectChannelLocation,
@@ -718,7 +719,7 @@ export default function Terminal({ token }: Props) {
     setWorkspaceInitialPath(initialPath)
     setShowWorkspace(true)
     if (canEmbedBrowser) setShowFileBrowser(true)
-    replaceWorkspaceBrowserUrl(initialPath || null)
+    pushWorkspaceBrowserUrl(initialPath || null)
   }, [canEmbedBrowser, showFileBrowser])
 
   const closeWorkspaceBrowser = useCallback(() => {
@@ -733,6 +734,18 @@ export default function Terminal({ token }: Props) {
     setWorkspaceInitialPath(path)
     replaceWorkspaceBrowserUrl(path)
   }, [])
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const workspaceLocation = parseWorkspaceBrowserLocation(window.location.href)
+      setShowWorkspace(workspaceLocation.isWorkspaceOpen)
+      setShowFileBrowser(workspaceLocation.isWorkspaceOpen && canEmbedBrowser)
+      setFileEditorOpen(false)
+      setWorkspaceInitialPath(workspaceLocation.workspacePath || '')
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [canEmbedBrowser])
 
   const markChannelSeenRemote = useCallback((project: string, channelIndex: number) => {
     fetch('/api/channel-status/seen', {
