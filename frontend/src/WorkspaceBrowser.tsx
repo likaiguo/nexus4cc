@@ -20,6 +20,7 @@ interface Props {
   overlay?: boolean
   hideSidebar?: boolean
   onEditingChange?: (editing: boolean) => void
+  onPathChange?: (path: string) => void
 }
 
 function formatSize(bytes?: number): string {
@@ -209,7 +210,7 @@ export interface WorkspaceBrowserHandle {
   closeEditor: () => void
 }
 
-const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, embedded, overlay, hideSidebar, onEditingChange }: Props, ref) {
+const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, embedded, overlay, hideSidebar, onEditingChange, onPathChange }: Props, ref) {
   const { t } = useTranslation()
   const [workspaceRoot, setWorkspaceRoot] = useState('')
 
@@ -409,6 +410,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
       const data = await r.json()
       // data.path 是服务端返回的规范化绝对路径
       setCurrentPath(data.path)
+      onPathChange?.(data.path)
       // Phase 1：先用 mtime 渲染列表（size 列占位）
       setEntries((data.entries || []).map((e: FileEntry) => ({ ...e, size: undefined })))
       setLoading(false)
@@ -426,7 +428,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
       setEntries([])
       setLoading(false)
     }
-  }, [token, showHidden])
+  }, [token, showHidden, onPathChange])
 
   // 当 currentPath 确定后加载内容
   useEffect(() => {

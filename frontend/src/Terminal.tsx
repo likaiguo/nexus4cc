@@ -14,10 +14,14 @@ import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
 import {
   buildProjectChannelUrl,
+  clearWorkspaceBrowserUrl,
   normalizeChannelIndex,
   parseProjectChannelLocation,
+  parseWorkspaceBrowserLocation,
   replaceProjectChannelUrl,
+  replaceWorkspaceBrowserUrl,
   type ProjectChannelLocation,
+  type WorkspaceBrowserLocation,
 } from './shareableLocation'
 
 // ANSI 256-color palette (0-15 standard, 16-231 6x6x6 cube, 232-255 grayscale)
@@ -324,6 +328,13 @@ function initialUrlRequest(): ProjectChannelLocation {
   return parseProjectChannelLocation(window.location.href)
 }
 
+function initialWorkspaceBrowserRequest(): WorkspaceBrowserLocation {
+  if (typeof window === 'undefined') {
+    return { panel: null, workspacePath: null, isWorkspaceOpen: false, hasWorkspacePath: false }
+  }
+  return parseWorkspaceBrowserLocation(window.location.href)
+}
+
 function initialChannelIndex(urlRequest: ProjectChannelLocation): number {
   if (urlRequest.channel !== null) return urlRequest.channel
   return normalizeChannelIndex(localStorage.getItem(WINDOW_KEY) || '0')
@@ -365,6 +376,9 @@ export default function Terminal({ token }: Props) {
   const initialLocationRef = useRef<ProjectChannelLocation | null>(null)
   if (initialLocationRef.current === null) initialLocationRef.current = initialUrlRequest()
   const initialLocation = initialLocationRef.current
+  const initialWorkspaceLocationRef = useRef<WorkspaceBrowserLocation | null>(null)
+  if (initialWorkspaceLocationRef.current === null) initialWorkspaceLocationRef.current = initialWorkspaceBrowserRequest()
+  const initialWorkspaceLocation = initialWorkspaceLocationRef.current
   const urlRestoreDoneRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
@@ -402,8 +416,9 @@ export default function Terminal({ token }: Props) {
   const [isConnecting, setIsConnecting] = useState(false)
   const hasConnectedRef = useRef(false)
   const [showFiles, setShowFiles] = useState(false)
-  const [showWorkspace, setShowWorkspace] = useState(false)
-  const [showFileBrowser, setShowFileBrowser] = useState(false)
+  const [showWorkspace, setShowWorkspace] = useState(() => initialWorkspaceLocation.isWorkspaceOpen)
+  const [workspaceInitialPath, setWorkspaceInitialPath] = useState(() => initialWorkspaceLocation.workspacePath || '')
+  const [showFileBrowser, setShowFileBrowser] = useState(() => initialWorkspaceLocation.isWorkspaceOpen && canEmbedBrowser)
   const [fileEditorOpen, setFileEditorOpen] = useState(false)
   const [copySheetText, setCopySheetText] = useState<string | null>(null)
   const [showScrollback, setShowScrollback] = useState(false)
@@ -689,6 +704,34 @@ export default function Terminal({ token }: Props) {
   const syncLocationUrl = useCallback((project: string, channelIndex: number) => {
     if (!project) return ''
     return replaceProjectChannelUrl(project, normalizeChannelIndex(channelIndex))
+  }, [])
+
+  const openWorkspaceBrowser = useCallback((initialPath = '') => {
+    if (canEmbedBrowser && showFileBrowser) {
+      setShowFileBrowser(false)
+      setFileEditorOpen(false)
+      setShowWorkspace(false)
+      setWorkspaceInitialPath('')
+      clearWorkspaceBrowserUrl()
+      return
+    }
+    setWorkspaceInitialPath(initialPath)
+    setShowWorkspace(true)
+    if (canEmbedBrowser) setShowFileBrowser(true)
+    replaceWorkspaceBrowserUrl(initialPath || null)
+  }, [canEmbedBrowser, showFileBrowser])
+
+  const closeWorkspaceBrowser = useCallback(() => {
+    setShowWorkspace(false)
+    setShowFileBrowser(false)
+    setFileEditorOpen(false)
+    setWorkspaceInitialPath('')
+    clearWorkspaceBrowserUrl()
+  }, [])
+
+  const handleWorkspacePathChange = useCallback((path: string) => {
+    setWorkspaceInitialPath(path)
+    replaceWorkspaceBrowserUrl(path)
   }, [])
 
   const markChannelSeenRemote = useCallback((project: string, channelIndex: number) => {
@@ -2453,7 +2496,7 @@ export default function Terminal({ token }: Props) {
     onToggleTheme: toggleTheme,
     onOpenSettings: () => setShowGeneralSettings(true),
     onOpenFiles: () => setShowFiles(true),
-    onOpenWorkspace: () => { if (canEmbedBrowser) { setShowFileBrowser(v => !v) } else setShowWorkspace(true) },
+    onOpenWorkspace: () => openWorkspaceBrowser(),
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
     onUploadFiles: enqueueFiles,
@@ -2618,7 +2661,7 @@ export default function Terminal({ token }: Props) {
                     </button>
 
                     <button
-                      onClick={(e) => { e.stopPropagation(); if (canEmbedBrowser) { setShowFileBrowser(v => !v) } else setShowWorkspace(true); }}
+                      onClick={(e) => { e.stopPropagation(); openWorkspaceBrowser(); }}
                       className={`w-12 h-10 bg-transparent border-none flex items-center justify-center cursor-pointer ${canEmbedBrowser && showFileBrowser ? 'text-nexus-accent' : 'text-nexus-text-2'}`}
                       title={t('toolbar.workspace')}
                     >
@@ -2737,9 +2780,11 @@ export default function Terminal({ token }: Props) {
                   ref={workspaceBrowserRef}
                   embedded
                   token={token}
-                  onClose={() => { setShowFileBrowser(false); setFileEditorOpen(false) }}
+                  onClose={closeWorkspaceBrowser}
+                  initialPath={workspaceInitialPath}
                   currentSession={activeTmuxSession}
                   onEditingChange={setFileEditorOpen}
+                  onPathChange={handleWorkspacePathChange}
                 />
               </Suspense>
             )}
@@ -2778,9 +2823,11 @@ export default function Terminal({ token }: Props) {
                     overlay={!showFileBrowser}
                     hideSidebar={!showFileBrowser}
                     token={token}
-                    onClose={() => setShowFileBrowser(false)}
+                    onClose={closeWorkspaceBrowser}
+                    initialPath={workspaceInitialPath}
                     currentSession={activeTmuxSession}
                     onEditingChange={setFileEditorOpen}
+                    onPathChange={handleWorkspacePathChange}
                   />
                 </Suspense>
               </div>
@@ -2807,7 +2854,7 @@ export default function Terminal({ token }: Props) {
                   e.preventDefault()
                   e.stopPropagation()
                   browserOpenTimeRef.current = Date.now()
-                  setShowFileBrowser(true)
+                  openWorkspaceBrowser(workspaceInitialPath)
                 }}
                 title="展开文件浏览器"
               >
@@ -3020,8 +3067,10 @@ export default function Terminal({ token }: Props) {
         <Suspense fallback={null}>
           <WorkspaceBrowser
             token={token}
-            onClose={() => setShowWorkspace(false)}
+            onClose={closeWorkspaceBrowser}
+            initialPath={workspaceInitialPath}
             currentSession={activeTmuxSession}
+            onPathChange={handleWorkspacePathChange}
           />
         </Suspense>
       )}
