@@ -51,6 +51,17 @@ interface Project {
   channelCount: number
 }
 
+type ReorderKind = 'project' | 'channel'
+
+interface ReorderDragState {
+  kind: ReorderKind
+  id: string
+  startX: number
+  startY: number
+  pointerId: number
+  dragging: boolean
+}
+
 interface Props {
   token: string
   currentProject: string
@@ -78,6 +89,14 @@ function useIsDesktop() {
     return () => mq.removeEventListener('change', onChange)
   }, [])
   return isDesktop
+}
+
+function moveItem<T>(items: T[], fromIndex: number, toIndex: number) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return items
+  const next = items.slice()
+  const [item] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, item)
+  return next
 }
 
 // Full-fleet channel status: { "<session>": { "<index>": WindowStatus } }
@@ -121,19 +140,24 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   // Mobile/modal gesture state
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingChannelRef = useRef<Channel | null>(null)
-  const longPressTimerRef = useRef<number | null>(null)
-  const longPressChannelRef = useRef<Channel | null>(null)
-  const isLongPressRef = useRef(false)
-  const [longPressMenu, setLongPressMenu] = useState<{ channel: Channel; x: number; y: number } | null>(null)
   const [pressChannel, setPressChannel] = useState<number | null>(null)
   const [channelMenu, setChannelMenu] = useState<{ channel: Channel; x: number; y: number } | null>(null)
   const [projectMenu, setProjectMenu] = useState<{ project: Project; x: number; y: number } | null>(null)
+  const projectsRef = useRef<Project[]>([])
+  const channelsRef = useRef<Channel[]>([])
+  const reorderDragRef = useRef<ReorderDragState | null>(null)
+  const suppressClickRef = useRef(false)
+  const [draggingProject, setDraggingProject] = useState<string | null>(null)
+  const [draggingChannel, setDraggingChannel] = useState<number | null>(null)
 
   // Sidebar right-click menu state
   const [sidebarChannelMenu, setSidebarChannelMenu] = useState<{ channel: Channel; x: number; y: number } | null>(null)
   const [sidebarProjectMenu, setSidebarProjectMenu] = useState<{ project: Project; x: number; y: number } | null>(null)
 
   const headers = { Authorization: `Bearer ${token}` }
+
+  useEffect(() => { projectsRef.current = projects }, [projects])
+  useEffect(() => { channelsRef.current = channels }, [channels])
 
   // --- Data fetching ---
 
@@ -230,7 +254,140 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   // --- Actions ---
 
+  const saveProjectOrder = useCallback(async (nextProjects: Project[]) => {
+    try {
+      const r = await fetch('/api/project-order', {
+        method: 'PATCH',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: nextProjects.map(project => project.name) }),
+      })
+      if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.loadFailed'))); fetchProjects(); return }
+      const data = await r.json()
+      if (Array.isArray(data?.projects)) setProjects(data.projects)
+    } catch (e: unknown) {
+      setError(parseNetworkError(e))
+      fetchProjects()
+    }
+  }, [token, fetchProjects, t])
+
+  const saveChannelOrder = useCallback(async (projectName: string, nextChannels: Channel[]) => {
+    if (!projectName) return
+    try {
+      const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/channel-order`, {
+        method: 'PATCH',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: nextChannels.map(channel => channel.index) }),
+      })
+      if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.loadFailed'))); fetchChannels(projectName); return }
+      const data = await r.json()
+      if (Array.isArray(data?.channels)) setChannels(data.channels)
+    } catch (e: unknown) {
+      setError(parseNetworkError(e))
+      fetchChannels(projectName)
+    }
+  }, [token, fetchChannels, t])
+
+  const beginReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return
+    setChannelMenu(null)
+    setProjectMenu(null)
+    setSidebarChannelMenu(null)
+    setSidebarProjectMenu(null)
+    reorderDragRef.current = {
+      kind,
+      id,
+      startX: e.clientX,
+      startY: e.clientY,
+      pointerId: e.pointerId,
+      dragging: false,
+    }
+    suppressClickRef.current = false
+    if (kind === 'channel') setPressChannel(Number(id))
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {}
+  }
+
+  const updateReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>) => {
+    const drag = reorderDragRef.current
+    if (!drag || drag.kind !== kind || drag.id !== id || drag.pointerId !== e.pointerId) return
+    const dx = Math.abs(e.clientX - drag.startX)
+    const dy = Math.abs(e.clientY - drag.startY)
+    if (!drag.dragging) {
+      if (dy < 8 || dy < dx) return
+      drag.dragging = true
+      suppressClickRef.current = true
+      if (kind === 'project') setDraggingProject(id)
+      else setDraggingChannel(Number(id))
+    }
+    e.preventDefault()
+    const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-reorder-kind][data-reorder-id]') as HTMLElement | null
+    if (!target || target.dataset.reorderKind !== kind) return
+    const targetId = target.dataset.reorderId
+    if (!targetId || targetId === drag.id) return
+    if (kind === 'project') {
+      setProjects(prev => {
+        const from = prev.findIndex(project => project.name === drag.id)
+        const to = prev.findIndex(project => project.name === targetId)
+        const next = moveItem(prev, from, to)
+        projectsRef.current = next
+        return next
+      })
+    } else {
+      setChannels(prev => {
+        const from = prev.findIndex(channel => String(channel.index) === drag.id)
+        const to = prev.findIndex(channel => String(channel.index) === targetId)
+        const next = moveItem(prev, from, to)
+        channelsRef.current = next
+        return next
+      })
+    }
+  }
+
+  const endReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>) => {
+    const drag = reorderDragRef.current
+    if (!drag || drag.kind !== kind || drag.id !== id || drag.pointerId !== e.pointerId) return false
+    reorderDragRef.current = null
+    setPressChannel(null)
+    setDraggingProject(null)
+    setDraggingChannel(null)
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {}
+    if (!drag.dragging) return false
+    e.preventDefault()
+    suppressClickRef.current = true
+    if (kind === 'project') {
+      saveProjectOrder(projectsRef.current.slice())
+    } else {
+      saveChannelOrder(currentProject, channelsRef.current.slice())
+    }
+    window.setTimeout(() => { suppressClickRef.current = false }, 0)
+    return true
+  }
+
+  const cancelReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>) => {
+    const drag = reorderDragRef.current
+    if (!drag || drag.kind !== kind || drag.id !== id || drag.pointerId !== e.pointerId) return
+    reorderDragRef.current = null
+    setPressChannel(null)
+    setDraggingProject(null)
+    setDraggingChannel(null)
+    if (drag.dragging) {
+      if (kind === 'project') fetchProjects()
+      else if (currentProject) fetchChannels(currentProject)
+    }
+  }
+
+  const clearReorderState = () => {
+    reorderDragRef.current = null
+    setPressChannel(null)
+    setDraggingProject(null)
+    setDraggingChannel(null)
+  }
+
   const handleProjectClick = async (project: Project) => {
+    if (suppressClickRef.current) return
     if (project.name === currentProject) return
     try {
       const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}/activate`, { method: 'POST', headers })
@@ -259,7 +416,6 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   const handleRenameChannel = async (channel: Channel) => {
     setChannelMenu(null)
-    setLongPressMenu(null)
     setSidebarChannelMenu(null)
     const newName = window.prompt(`${t('common.rename')} Channel:`, channel.name)
     if (!newName || newName === channel.name) return
@@ -278,7 +434,6 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   const handleCloseChannel = async (channel: Channel) => {
     setChannelMenu(null)
-    setLongPressMenu(null)
     setSidebarChannelMenu(null)
     try {
       const r = await fetch(`/api/sessions/${channel.index}?session=${encodeURIComponent(currentProject)}`, {
@@ -357,6 +512,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   const handleSidebarContext = (e: React.MouseEvent, channel?: Channel, project?: Project) => {
     e.preventDefault()
+    clearReorderState()
     const clickX = e.clientX
     const clickY = e.clientY
     if (channel) {
@@ -378,33 +534,10 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     }
   }
 
-  // --- Mobile touch gestures ---
-
-  const handleChannelTouchStart = (channel: Channel, e: React.TouchEvent) => {
-    isLongPressRef.current = false
-    longPressChannelRef.current = channel
-    setPressChannel(channel.index)
-    longPressTimerRef.current = window.setTimeout(() => {
-      isLongPressRef.current = true
-      setPressChannel(null)
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-      const menuWidth = 120
-      const menuHeight = 80
-      let x = rect.left + rect.width / 2
-      let y = rect.bottom + 8
-      if (x + menuWidth / 2 > window.innerWidth - 16) x = window.innerWidth - menuWidth / 2 - 16
-      if (x - menuWidth / 2 < 16) x = menuWidth / 2 + 16
-      if (y + menuHeight > window.innerHeight - 16) y = rect.top - menuHeight - 8
-      setLongPressMenu({ channel, x, y })
-    }, 500)
-  }
+  // --- Mobile tap gestures ---
 
   const handleChannelTouchEnd = (channel: Channel) => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current)
-      longPressTimerRef.current = null
-    }
-    if (isLongPressRef.current) { setPressChannel(null); return }
+    if (suppressClickRef.current) { setPressChannel(null); return }
     setTimeout(() => setPressChannel(null), 100)
     if (channel.index === currentChannelIndex) { onClose(); return }
     pendingChannelRef.current = channel
@@ -420,12 +553,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     }
   }
 
-  const handleChannelTouchMove = () => {
-    setPressChannel(null)
-    if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null }
-  }
-
-  const activeChannelMenu = isSidebar ? null : (longPressMenu || channelMenu)
+  const activeChannelMenu = isSidebar ? null : channelMenu
 
   const formatPath = (p: string) => {
     if (!p) return ''
@@ -491,10 +619,18 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                 <div
                   key={project.name}
                   data-menu-row
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none group/item ${isActive ? 'bg-blue-500/15' : ''}`}
-                  onPointerDown={() => {
-                    if (project.name !== currentProject) handleProjectClick(project)
+                  data-reorder-kind="project"
+                  data-reorder-id={project.name}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none group/item ${isActive ? 'bg-blue-500/15' : ''} ${draggingProject === project.name ? 'bg-nexus-border opacity-80' : ''}`}
+                  onPointerDown={(e) => {
+                    beginReorderPointer('project', project.name, e)
                   }}
+                  onPointerMove={(e) => updateReorderPointer('project', project.name, e)}
+                  onPointerUp={(e) => {
+                    const dragged = endReorderPointer('project', project.name, e)
+                    if (!dragged && project.name !== currentProject) handleProjectClick(project)
+                  }}
+                  onPointerCancel={(e) => cancelReorderPointer('project', project.name, e)}
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) } : undefined}
                 >
                   {renderDot(projectStatusOf(project.name))}
@@ -511,6 +647,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                     <button
                       className={menuButtonClass('modal')}
                       onPointerDown={(e) => {
+                        e.preventDefault()
                         e.stopPropagation()
                         showModalProjectMenu(project, e)
                       }}
@@ -558,13 +695,21 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                 <div
                   key={channel.index}
                   data-menu-row
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${!isDesktop && pressChannel === channel.index ? 'bg-nexus-border' : ''}`}
+                  data-reorder-kind="channel"
+                  data-reorder-id={String(channel.index)}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${!isDesktop && pressChannel === channel.index ? 'bg-nexus-border' : ''} ${draggingChannel === channel.index ? 'bg-nexus-border opacity-80' : ''}`}
                   style={{ WebkitTouchCallout: 'none' }}
-                  onPointerDown={() => { if (isDesktop) doSwitchChannel(channel, false) }}
+                  onPointerDown={(e) => {
+                    beginReorderPointer('channel', String(channel.index), e)
+                  }}
+                  onPointerMove={(e) => updateReorderPointer('channel', String(channel.index), e)}
+                  onPointerUp={(e) => {
+                    const dragged = endReorderPointer('channel', String(channel.index), e)
+                    if (!dragged && isDesktop) doSwitchChannel(channel, false)
+                  }}
+                  onPointerCancel={(e) => cancelReorderPointer('channel', String(channel.index), e)}
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) } : undefined}
-                  onTouchStart={(e) => { if (!isDesktop) handleChannelTouchStart(channel, e) }}
                   onTouchEnd={(e) => { if (!isDesktop) { e.preventDefault(); handleChannelTouchEnd(channel) } }}
-                  onTouchMove={() => { if (!isDesktop) handleChannelTouchMove() }}
                 >
                   {renderDot(status)}
                   <span className="text-nexus-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
@@ -573,6 +718,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                     <button
                       className={menuButtonClass('modal')}
                       onPointerDown={(e) => {
+                        e.preventDefault()
                         e.stopPropagation()
                         showModalChannelMenu(channel, e)
                       }}
@@ -596,7 +742,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
           {/* Modal mode: channel menu overlay */}
           {activeChannelMenu && (
             <>
-              <div className="fixed inset-0 z-[150]" onPointerDown={() => { setLongPressMenu(null); setChannelMenu(null) }} />
+              <div className="fixed inset-0 z-[150]" onPointerDown={() => { setChannelMenu(null) }} />
               <div
                 className="fixed bg-nexus-bg border border-nexus-border rounded-lg py-1 min-w-[120px] shadow-[0_4px_20px_rgba(0,0,0,0.3)] z-[151]"
                 style={{ left: activeChannelMenu.x, top: activeChannelMenu.y }}
@@ -665,8 +811,18 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                 <div
                   key={project.name}
                   data-menu-row
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none group/item ${isActive ? 'bg-blue-500/15' : ''}`}
-                  onPointerDown={() => { if (project.name !== currentProject) handleProjectClick(project) }}
+                  data-reorder-kind="project"
+                  data-reorder-id={project.name}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none group/item ${isActive ? 'bg-blue-500/15' : ''} ${draggingProject === project.name ? 'bg-nexus-border opacity-80' : ''}`}
+                  onPointerDown={(e) => {
+                    beginReorderPointer('project', project.name, e)
+                  }}
+                  onPointerMove={(e) => updateReorderPointer('project', project.name, e)}
+                  onPointerUp={(e) => {
+                    const dragged = endReorderPointer('project', project.name, e)
+                    if (!dragged && project.name !== currentProject) handleProjectClick(project)
+                  }}
+                  onPointerCancel={(e) => cancelReorderPointer('project', project.name, e)}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) }}
                 >
                   {renderDot(projectStatusOf(project.name))}
@@ -716,9 +872,19 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                 <div
                   key={channel.index}
                   data-menu-row
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''}`}
+                  data-reorder-kind="channel"
+                  data-reorder-id={String(channel.index)}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${draggingChannel === channel.index ? 'bg-nexus-border opacity-80' : ''}`}
                   style={{ WebkitTouchCallout: 'none' }}
-                  onPointerDown={() => { doSwitchChannel(channel, false) }}
+                  onPointerDown={(e) => {
+                    beginReorderPointer('channel', String(channel.index), e)
+                  }}
+                  onPointerMove={(e) => updateReorderPointer('channel', String(channel.index), e)}
+                  onPointerUp={(e) => {
+                    const dragged = endReorderPointer('channel', String(channel.index), e)
+                    if (!dragged) doSwitchChannel(channel, false)
+                  }}
+                  onPointerCancel={(e) => cancelReorderPointer('channel', String(channel.index), e)}
                   onDoubleClick={() => { onCloseEditor?.(); doSwitchChannel(channel, false) }}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) }}
                 >

@@ -87,6 +87,50 @@ function normalizeChannelIndex(value) {
   return Number.isFinite(n) ? Math.floor(n) : 0
 }
 
+function normalizeProjectName(value) {
+  return String(value || '').trim()
+}
+
+function normalizeOrderList(values, liveValues = null, normalize = value => String(value)) {
+  if (!Array.isArray(values)) throw new Error('order must be an array')
+  const liveSet = new Set(Array.isArray(liveValues) ? liveValues.map(normalize) : [])
+  const requireLiveMatch = Array.isArray(liveValues)
+  const seen = new Set()
+  const out = []
+  for (const raw of values) {
+    const value = normalize(raw)
+    if (value === '' || seen.has(value)) continue
+    if (requireLiveMatch && !liveSet.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out
+}
+
+export function mergeItemsWithSavedOrder(items, savedOrder, getKey) {
+  if (!Array.isArray(items) || items.length === 0) return []
+  const saved = Array.isArray(savedOrder) ? savedOrder.map(String) : []
+  if (saved.length === 0) return items.slice()
+
+  const byKey = new Map()
+  for (const item of items) {
+    byKey.set(String(getKey(item)), item)
+  }
+
+  const ordered = []
+  const used = new Set()
+  for (const key of saved) {
+    if (!byKey.has(key) || used.has(key)) continue
+    ordered.push(byKey.get(key))
+    used.add(key)
+  }
+  for (const item of items) {
+    const key = String(getKey(item))
+    if (!used.has(key)) ordered.push(item)
+  }
+  return ordered
+}
+
 function draftScope(project, channelIndex) {
   return `${String(project || '')}:${normalizeChannelIndex(channelIndex)}`
 }
@@ -231,6 +275,24 @@ export class NexusStore {
         cursor_pos INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS project_order (
+        project TEXT PRIMARY KEY,
+        position INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_order_position
+        ON project_order(position);
+
+      CREATE TABLE IF NOT EXISTS channel_order (
+        project TEXT NOT NULL,
+        channel_index INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project, channel_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_channel_order_scope_position
+        ON channel_order(project, position);
 
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -576,6 +638,118 @@ export class NexusStore {
   clearComposerDraft({ project = '', channelIndex = 0 }) {
     return this.db.prepare('DELETE FROM composer_drafts WHERE scope_key = ?')
       .run(draftScope(project, channelIndex)).changes
+  }
+
+  getProjectOrder() {
+    return this.db.prepare(`
+      SELECT project
+      FROM project_order
+      ORDER BY position ASC, updated_at ASC
+    `).all().map(row => row.project)
+  }
+
+  saveProjectOrder(order = [], liveProjects = []) {
+    const normalized = normalizeOrderList(order, liveProjects, normalizeProjectName)
+    const ts = nowIso()
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM project_order').run()
+      const stmt = this.db.prepare(`
+        INSERT INTO project_order (project, position, updated_at)
+        VALUES (?, ?, ?)
+      `)
+      normalized.forEach((project, index) => stmt.run(project, index, ts))
+    })
+    tx()
+    return normalized
+  }
+
+  orderProjects(projects = []) {
+    const ordered = mergeItemsWithSavedOrder(projects, this.getProjectOrder(), project => project.name)
+    const liveNames = projects.map(project => project.name)
+    this.pruneProjectOrder(liveNames)
+    return ordered
+  }
+
+  pruneProjectOrder(liveProjects = []) {
+    const normalized = normalizeOrderList(liveProjects, null, normalizeProjectName)
+    if (normalized.length === 0) {
+      return this.db.prepare('DELETE FROM project_order').run().changes
+    }
+    const placeholders = normalized.map(() => '?').join(',')
+    return this.db.prepare(`DELETE FROM project_order WHERE project NOT IN (${placeholders})`).run(...normalized).changes
+  }
+
+  getChannelOrder(project = '') {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return []
+    return this.db.prepare(`
+      SELECT channel_index
+      FROM channel_order
+      WHERE project = ?
+      ORDER BY position ASC, updated_at ASC
+    `).all(projectName).map(row => row.channel_index)
+  }
+
+  saveChannelOrder(project = '', order = [], liveIndexes = []) {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) throw new Error('project required')
+    const normalized = normalizeOrderList(order, liveIndexes, value => String(normalizeChannelIndex(value)))
+      .map(value => normalizeChannelIndex(value))
+    const ts = nowIso()
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM channel_order WHERE project = ?').run(projectName)
+      const stmt = this.db.prepare(`
+        INSERT INTO channel_order (project, channel_index, position, updated_at)
+        VALUES (?, ?, ?, ?)
+      `)
+      normalized.forEach((channelIndex, index) => stmt.run(projectName, channelIndex, index, ts))
+    })
+    tx()
+    return normalized
+  }
+
+  orderChannels(project = '', channels = []) {
+    const projectName = normalizeProjectName(project)
+    const ordered = mergeItemsWithSavedOrder(channels, this.getChannelOrder(projectName), channel => channel.index)
+    const liveIndexes = channels.map(channel => channel.index)
+    this.pruneChannelOrder(projectName, liveIndexes)
+    return ordered
+  }
+
+  pruneChannelOrder(project = '', liveIndexes = []) {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return 0
+    const normalized = normalizeOrderList(liveIndexes, null, value => String(normalizeChannelIndex(value)))
+      .map(value => normalizeChannelIndex(value))
+    if (normalized.length === 0) {
+      return this.db.prepare('DELETE FROM channel_order WHERE project = ?').run(projectName).changes
+    }
+    const placeholders = normalized.map(() => '?').join(',')
+    return this.db.prepare(`DELETE FROM channel_order WHERE project = ? AND channel_index NOT IN (${placeholders})`)
+      .run(projectName, ...normalized).changes
+  }
+
+  renameProjectOrder(oldProject = '', newProject = '') {
+    const oldName = normalizeProjectName(oldProject)
+    const newName = normalizeProjectName(newProject)
+    if (!oldName || !newName || oldName === newName) return 0
+    const ts = nowIso()
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM project_order WHERE project = ?').run(newName)
+      this.db.prepare('DELETE FROM channel_order WHERE project = ?').run(newName)
+      this.db.prepare(`
+        UPDATE project_order
+        SET project = ?, updated_at = ?
+        WHERE project = ?
+      `).run(newName, ts, oldName)
+      this.db.prepare(`
+        UPDATE channel_order
+        SET project = ?, updated_at = ?
+        WHERE project = ?
+      `).run(newName, ts, oldName)
+    })
+    tx()
+    return 1
   }
 
   mapAttentionEventRow(row) {
