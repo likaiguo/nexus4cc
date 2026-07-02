@@ -143,6 +143,24 @@ test('mobile expanded shortcut rows use the same thumb-space grid', () => {
   assert.doesNotMatch(expandedSource, /flex flex-wrap gap-1 px-1\.5/)
 })
 
+test('repeatable mobile shortcuts use pointer lifecycle repeat handling', () => {
+  const toolbarSource = fs.readFileSync('frontend/src/Toolbar.tsx', 'utf8')
+  assert.match(toolbarSource, /const REPEATABLE_KEY_IDS = new Set\(\['up', 'down', 'left', 'right'\]\)/)
+  assert.match(toolbarSource, /const KEY_REPEAT_INITIAL_DELAY_MS = 320/)
+  assert.match(toolbarSource, /const KEY_REPEAT_INTERVAL_MS = 75/)
+  assert.match(toolbarSource, /function handleShortcutPointerDown\(e: React\.PointerEvent<HTMLButtonElement>, key: KeyDef\)/)
+  assert.match(toolbarSource, /handleKey\(key\)/)
+  assert.match(toolbarSource, /if \(!isRepeatableKey\(key\)\) return/)
+  assert.match(toolbarSource, /async function handleKey\(key: KeyDef, options: \{ reportUsage\?: boolean \} = \{\}\)/)
+  assert.match(toolbarSource, /if \(reportUsage\) reportShortcutUsage\(key\)/)
+  assert.match(toolbarSource, /onPointerDown=\{\(e\) => handleShortcutPointerDown\(e, key\)\}/)
+  assert.match(toolbarSource, /onPointerUp=\{stopKeyRepeat\}/)
+  assert.match(toolbarSource, /onPointerCancel=\{stopKeyRepeat\}/)
+  assert.match(toolbarSource, /onPointerLeave=\{stopKeyRepeat\}/)
+  assert.match(toolbarSource, /onLostPointerCapture=\{stopKeyRepeat\}/)
+  assert.match(toolbarSource, /window\.addEventListener\('blur', stopKeyRepeat\)/)
+})
+
 test('mobile quick menu includes a first-row collapse action', () => {
   const toolbarSource = fs.readFileSync('frontend/src/Toolbar.tsx', 'utf8')
   assert.match(
@@ -159,6 +177,29 @@ test('composer draft can be collapsed and history replay opens composer', () => 
     terminalSource,
     /function applyComposerHistory\(item: InputHistoryItem\) \{[\s\S]*composerModeRef\.current = 'composer'[\s\S]*setComposerMode\('composer'\)[\s\S]*setComposerDraftWithCursor\(item\.text, item\.text\.length\)/,
   )
+})
+
+test('terminal copy sheet uses selectable static text instead of textarea', () => {
+  const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
+  const copySheetStart = terminalSource.indexOf('{copySheetText !== null && (')
+  const copySheetSource = terminalSource.slice(copySheetStart, copySheetStart + 2400)
+  assert.match(copySheetSource, /<pre\s+ref=\{copySheetContentRef\}/)
+  assert.match(copySheetSource, /onClick=\{handleCopySheetCopy\}/)
+  assert.match(copySheetSource, /copySheetCopied \? 'Copied' : 'Copy'/)
+  assert.match(copySheetSource, /Select text, then tap Copy/)
+  assert.doesNotMatch(copySheetSource, /<textarea/)
+})
+
+test('history mode exposes selection-aware floating copy action', () => {
+  const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
+  assert.match(terminalSource, /function selectionInsideElement\(root: HTMLElement \| null\)/)
+  assert.match(terminalSource, /const \[historySelection, setHistorySelection\]/)
+  assert.match(terminalSource, /document\.addEventListener\('selectionchange', updateSelection\)/)
+  assert.match(terminalSource, /selectionInsideElement\(scrollbackContentRef\.current\)/)
+  assert.match(terminalSource, /if \(selectionInsideElement\(scrollbackContentRef\.current\)\) return/)
+  assert.match(terminalSource, /ref=\{scrollbackContentRef\}/)
+  assert.match(terminalSource, /historySelection && \(/)
+  assert.match(terminalSource, /handleCopyHistorySelection\(\)/)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

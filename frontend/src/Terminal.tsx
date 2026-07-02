@@ -52,6 +52,38 @@ type AnsiStyle = {
 const MIN_TEXT_CONTRAST = 4.5
 const HISTORY_FETCH_LINES = 50000
 
+function selectionInsideElement(root: HTMLElement | null): { text: string; rect: DOMRect | null } | null {
+  if (!root) return null
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return null
+  const text = selection.toString()
+  if (!text) return null
+  const anchor = selection.anchorNode
+  const focus = selection.focusNode
+  if (!anchor || !focus || !root.contains(anchor) || !root.contains(focus)) return null
+  const range = selection.getRangeAt(0)
+  const rect = range.getBoundingClientRect()
+  if (rect.width > 0 || rect.height > 0) return { text, rect }
+  const firstRect = range.getClientRects()[0] ?? null
+  return { text, rect: firstRect }
+}
+
+function floatingSelectionPosition(rect: DOMRect | null) {
+  if (!rect) {
+    return {
+      top: 56,
+      left: Math.max(48, Math.min(window.innerWidth / 2, window.innerWidth - 48)),
+    }
+  }
+  const above = rect.top >= 52
+  const rawTop = above ? rect.top - 42 : rect.bottom + 8
+  const rawLeft = rect.left + rect.width / 2
+  return {
+    top: Math.max(8, Math.min(rawTop, window.innerHeight - 48)),
+    left: Math.max(48, Math.min(rawLeft, window.innerWidth - 48)),
+  }
+}
+
 function parseColor(color: string): { r: number; g: number; b: number } | null {
   const value = color.trim()
   const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i)
@@ -417,9 +449,11 @@ export default function Terminal({ token }: Props) {
   const [showWorkspace, setShowWorkspace] = useState(() => initialWorkspaceLocation.isWorkspaceOpen)
   const [workspaceInitialPath, setWorkspaceInitialPath] = useState(() => initialWorkspaceLocation.workspacePath || '')
   const [copySheetText, setCopySheetText] = useState<string | null>(null)
+  const [copySheetCopied, setCopySheetCopied] = useState(false)
   const [showScrollback, setShowScrollback] = useState(false)
   const [scrollbackContent, setScrollbackContent] = useState('')
   const [scrollbackLoading, setScrollbackLoading] = useState(false)
+  const [historySelection, setHistorySelection] = useState<{ text: string; top: number; left: number } | null>(null)
   const [composerMode, setComposerMode] = useState<ComposerMode>('direct')
   const [composerAppendEnter, setComposerAppendEnter] = useState(true)
   const [composerDraft, setComposerDraft] = useState('')
@@ -433,6 +467,8 @@ export default function Terminal({ token }: Props) {
   const showScrollbackRef = useRef(false)
   const swipeUpAccumRef = useRef(0)
   const scrollbackOverlayRef = useRef<HTMLDivElement>(null)
+  const scrollbackContentRef = useRef<HTMLPreElement>(null)
+  const copySheetContentRef = useRef<HTMLPreElement>(null)
   const triggerScrollbackRef = useRef<() => void>(() => {})
   const scrollbackPrefetchRef = useRef<Promise<{ content: string }> | null>(null)
   const scrollbackCacheRef = useRef<string | null>(null)
@@ -682,6 +718,23 @@ export default function Terminal({ token }: Props) {
       document.body.removeChild(textarea)
     }
   }, [])
+
+  const handleCopySheetCopy = useCallback(async () => {
+    const selected = selectionInsideElement(copySheetContentRef.current)
+    const text = selected?.text || copySheetText || ''
+    if (!text) return
+    await copyToClipboard(text)
+    setCopySheetCopied(true)
+    window.setTimeout(() => setCopySheetCopied(false), 1500)
+  }, [copySheetText, copyToClipboard])
+
+  const handleCopyHistorySelection = useCallback(async () => {
+    const selected = selectionInsideElement(scrollbackContentRef.current)
+    const text = selected?.text || historySelection?.text || ''
+    if (!text) return
+    await copyToClipboard(text)
+    setHistorySelection(null)
+  }, [copyToClipboard, historySelection])
 
   const syncLocationUrl = useCallback((project: string, channelIndex: number) => {
     if (!project) return ''
@@ -2342,6 +2395,7 @@ export default function Terminal({ token }: Props) {
     showScrollbackRef.current = false
     setShowScrollback(false)
     setScrollbackContent('')
+    setHistorySelection(null)
     scrollbackCacheRef.current = null
     scrollbackPrefetchRef.current = null
   }
@@ -2349,6 +2403,7 @@ export default function Terminal({ token }: Props) {
   function handleOverlayScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30
+    if (selectionInsideElement(scrollbackContentRef.current)) return
     if (atBottom) {
       closeScrollback()
     }
@@ -2358,6 +2413,7 @@ export default function Terminal({ token }: Props) {
     if (showScrollbackRef.current) return // already showing
     showScrollbackRef.current = true
     swipeUpAccumRef.current = 0
+    setHistorySelection(null)
     setShowScrollback(true)
 
     // Use pre-fetched cache if available (no loading flash)
@@ -2394,6 +2450,24 @@ export default function Terminal({ token }: Props) {
       el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 50)
     }
   }, [scrollbackContent])
+
+  useEffect(() => {
+    if (!showScrollback) {
+      setHistorySelection(null)
+      return
+    }
+    const updateSelection = () => {
+      const selected = selectionInsideElement(scrollbackContentRef.current)
+      if (!selected) {
+        setHistorySelection(null)
+        return
+      }
+      const pos = floatingSelectionPosition(selected.rect)
+      setHistorySelection({ text: selected.text, top: pos.top, left: pos.left })
+    }
+    document.addEventListener('selectionchange', updateSelection)
+    return () => document.removeEventListener('selectionchange', updateSelection)
+  }, [showScrollback])
 
   triggerScrollbackRef.current = fetchScrollback
 
@@ -2928,7 +3002,7 @@ export default function Terminal({ token }: Props) {
       {copySheetText !== null && (
         <div
           className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/40"
-          onClick={() => setCopySheetText(null)}
+          onClick={() => { setCopySheetText(null); setCopySheetCopied(false) }}
         >
           <div
             className="w-full max-w-lg bg-nexus-bg border-t border-nexus-border rounded-t-xl p-4 max-h-[60vh] flex flex-col gap-3"
@@ -2936,24 +3010,29 @@ export default function Terminal({ token }: Props) {
           >
             <div className="flex items-center justify-between">
               <span className="text-nexus-text font-medium text-sm">Terminal Content</span>
-              <button
-                className="text-xs px-3 py-1 rounded bg-nexus-accent text-white"
-                onClick={() => setCopySheetText(null)}
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className="text-xs px-3 py-1 rounded bg-nexus-accent text-white border-none cursor-pointer"
+                  onClick={handleCopySheetCopy}
+                >
+                  {copySheetCopied ? 'Copied' : 'Copy'}
+                </button>
+                <button
+                  className="text-xs px-3 py-1 rounded bg-nexus-bg-2 border border-nexus-border text-nexus-text cursor-pointer"
+                  onClick={() => { setCopySheetText(null); setCopySheetCopied(false) }}
+                >
+                  Close
+                </button>
+              </div>
             </div>
-            <textarea
-              readOnly
-              value={copySheetText}
-              className="w-full flex-1 min-h-[200px] bg-nexus-surface text-nexus-text text-xs font-mono p-3 rounded border border-nexus-border resize-none"
-              style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
-              onFocus={(e) => {
-                e.currentTarget.select()
-                e.currentTarget.setSelectionRange(0, e.currentTarget.value.length)
-              }}
-            />
-            <p className="text-nexus-text-2 text-xs text-center">Long press to select and copy</p>
+            <pre
+              ref={copySheetContentRef}
+              className="w-full flex-1 min-h-[200px] max-h-[42vh] overflow-auto bg-nexus-surface text-nexus-text text-xs font-mono p-3 rounded border border-nexus-border whitespace-pre-wrap break-words m-0"
+              style={{ userSelect: 'text', WebkitUserSelect: 'text', WebkitOverflowScrolling: 'touch' }}
+            >
+              {copySheetText}
+            </pre>
+            <p className="text-nexus-text-2 text-xs text-center">Select text, then tap Copy. Without a selection, Copy uses all content.</p>
           </div>
         </div>
       )}
@@ -3101,12 +3180,26 @@ export default function Terminal({ token }: Props) {
                 <div className="text-center p-8" style={{ color: termMuted, fontFamily: termFontFamily, fontSize: termFontSize }}>加载中...</div>
               ) : (
                 <pre
+                  ref={scrollbackContentRef}
                   className="m-0 p-0 whitespace-pre-wrap break-all leading-tight"
-                  style={{ fontFamily: termFontFamily, fontSize: termFontSize, color: termFg }}
+                  style={{ fontFamily: termFontFamily, fontSize: termFontSize, color: termFg, userSelect: 'text', WebkitUserSelect: 'text' }}
                   dangerouslySetInnerHTML={{ __html: ansiToHtml(scrollbackContent, termTheme) }}
                 />
               )}
             </div>
+            {historySelection && (
+              <button
+                className="fixed z-[510] -translate-x-1/2 rounded-md border-none px-3 py-1.5 text-xs font-medium text-white shadow-lg cursor-pointer"
+                style={{ top: historySelection.top, left: historySelection.left, background: 'var(--nexus-accent)' }}
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  handleCopyHistorySelection()
+                }}
+              >
+                Copy
+              </button>
+            )}
           </div>
         )
       })()}
