@@ -56,6 +56,7 @@ cp .env.example .env
 | `TMUX_SESSION` | `main` | tmux 会话名 |
 | `WORKSPACE_ROOT` | `/home` | Claude 能访问的目录根 |
 | `PORT` | `59000` | 服务端口 |
+| `NEXUS_DATA_DIR` | `~/.nexus4cc/data` | SQLite、profiles、运行数据目录 |
 
 **常用调整（可选）：**
 
@@ -65,6 +66,9 @@ WORKSPACE_ROOT=/home/yourname/work
 
 # 如需通过代理访问 Anthropic API
 CLAUDE_PROXY=http://127.0.0.1:6789
+
+# 如需把数据放到专门磁盘/volume
+NEXUS_DATA_DIR=/srv/nexus-data
 ```
 
 > ⚠️ **生产环境**请修改密码和 JWT_SECRET。使用默认密码时登录页会自动填入 **`nexus123`**，并可点击眼睛按钮显示/隐藏；登录后在「设置 → 安全」直接修改密码。设置自定义密码后，登录页不再展示默认密码。
@@ -73,19 +77,19 @@ CLAUDE_PROXY=http://127.0.0.1:6789
 
 ## 第三步：创建 Claude Profile（关键步骤）
 
-**这是新用户最容易遗漏的一步。** Nexus 通过 `data/configs/` 下的 JSON 文件来管理不同的 Claude API 配置（官方 API、Kimi、OpenRouter 等）。
+**这是新用户最容易遗漏的一步。** Nexus 通过运行数据目录下的 `configs/` JSON 文件来管理不同的 Claude API 配置（官方 API、Kimi、OpenRouter 等）。默认目录是 `~/.nexus4cc/data/configs/`; 如果设置了 `NEXUS_DATA_DIR`, 则使用 `$NEXUS_DATA_DIR/configs/`。
 
 ### 3.1 创建 configs 目录
 
 ```bash
-mkdir -p data/configs
+mkdir -p ~/.nexus4cc/data/configs
 ```
 
 ### 3.2 选择模板创建 Profile
 
 **模板 A：Anthropic 官方 API（推荐）**
 
-创建 `data/configs/anthropic.json`：
+创建 `~/.nexus4cc/data/configs/anthropic.json`：
 
 ```json
 {
@@ -105,7 +109,7 @@ mkdir -p data/configs
 
 **模板 B：Kimi（Moonshot 国内服务）**
 
-创建 `data/configs/kimi.json`：
+创建 `~/.nexus4cc/data/configs/kimi.json`：
 
 ```json
 {
@@ -123,7 +127,7 @@ mkdir -p data/configs
 
 **模板 C：OpenRouter（第三方聚合）**
 
-创建 `data/configs/openrouter.json`：
+创建 `~/.nexus4cc/data/configs/openrouter.json`：
 
 ```json
 {

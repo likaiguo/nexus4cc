@@ -39,6 +39,7 @@
     "pathHelp": "Use ~ for home directory, or enter an absolute path",
     "shellType": "Shell Type",
     "shellClaude": "Claude",
+    "shellCodex": "Codex",
     "shellZsh": "Zsh",
     "profileLabel": "Config Profile (optional)",
     "profileDefault": "Default (no profile)",

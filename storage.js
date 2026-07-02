@@ -12,6 +12,7 @@ const MAX_DRAFT_TEXT = 20000
 const MAX_ATTENTION_SUMMARY = 500
 const VALID_ATTENTION_STATUS = new Set(['new', 'seen', 'resolved', 'dismissed'])
 const VALID_ATTENTION_TYPES = new Set(['needs-confirm', 'done', 'task-success', 'task-error'])
+const VALID_TMUX_RECORD_STATUS = new Set(['active', 'closed'])
 export const DEFAULT_SETTINGS = Object.freeze({
   composerMode: 'direct',
   composerAppendEnter: true,
@@ -89,6 +90,17 @@ function normalizeChannelIndex(value) {
 
 function normalizeProjectName(value) {
   return String(value || '').trim()
+}
+
+function normalizeLauncher(value, fallback = 'bash') {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return fallback
+  return raw
+}
+
+function normalizeRecordStatus(value, fallback = 'active') {
+  const raw = String(value || '').trim().toLowerCase()
+  return VALID_TMUX_RECORD_STATUS.has(raw) ? raw : fallback
 }
 
 function normalizeOrderList(values, liveValues = null, normalize = value => String(value)) {
@@ -293,6 +305,42 @@ export class NexusStore {
       );
       CREATE INDEX IF NOT EXISTS idx_channel_order_scope_position
         ON channel_order(project, position);
+
+      CREATE TABLE IF NOT EXISTS tmux_projects (
+        name TEXT PRIMARY KEY,
+        cwd TEXT NOT NULL DEFAULT '',
+        display_name TEXT NOT NULL DEFAULT '',
+        launcher TEXT NOT NULL DEFAULT 'bash',
+        original_launcher TEXT NOT NULL DEFAULT '',
+        profile TEXT NOT NULL DEFAULT '',
+        last_channel_index INTEGER,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        restored_at TEXT,
+        CHECK (status IN ('active', 'closed'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_tmux_projects_status
+        ON tmux_projects(status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS tmux_channels (
+        project TEXT NOT NULL,
+        channel_index INTEGER NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        cwd TEXT NOT NULL DEFAULT '',
+        launcher TEXT NOT NULL DEFAULT 'bash',
+        original_launcher TEXT NOT NULL DEFAULT '',
+        profile TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        restored_at TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (project, channel_index),
+        CHECK (status IN ('active', 'closed'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_tmux_channels_status
+        ON tmux_channels(status, project, channel_index);
 
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -750,6 +798,273 @@ export class NexusStore {
     })
     tx()
     return 1
+  }
+
+  mapTmuxProjectRow(row) {
+    if (!row) return null
+    return {
+      name: row.name,
+      cwd: row.cwd || '',
+      displayName: row.display_name || row.name,
+      launcher: row.launcher || 'bash',
+      originalLauncher: row.original_launcher || '',
+      profile: row.profile || '',
+      lastChannelIndex: row.last_channel_index ?? null,
+      status: row.status || 'active',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      restoredAt: row.restored_at || null,
+    }
+  }
+
+  mapTmuxChannelRow(row) {
+    if (!row) return null
+    return {
+      project: row.project,
+      channelIndex: row.channel_index,
+      name: row.name || '',
+      cwd: row.cwd || '',
+      launcher: row.launcher || 'bash',
+      originalLauncher: row.original_launcher || '',
+      profile: row.profile || '',
+      status: row.status || 'active',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      restoredAt: row.restored_at || null,
+      metadata: safeParseJson(row.metadata_json, {}),
+    }
+  }
+
+  getTmuxProject(name = '') {
+    const project = normalizeProjectName(name)
+    if (!project) return null
+    return this.mapTmuxProjectRow(this.db.prepare('SELECT * FROM tmux_projects WHERE name = ?').get(project))
+  }
+
+  getTmuxChannel(project = '', channelIndex = 0) {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return null
+    return this.mapTmuxChannelRow(this.db.prepare('SELECT * FROM tmux_channels WHERE project = ? AND channel_index = ?')
+      .get(projectName, normalizeChannelIndex(channelIndex)))
+  }
+
+  upsertTmuxProject(project = {}, opts = {}) {
+    const name = normalizeProjectName(project.name)
+    if (!name) throw new Error('project name required')
+    const existing = this.getTmuxProject(name)
+    const preserve = Boolean(opts.preserveExistingLauncher)
+    const ts = nowIso()
+    const launcher = preserve && existing?.launcher
+      ? existing.launcher
+      : normalizeLauncher(project.launcher ?? existing?.launcher, 'bash')
+    const originalLauncher = preserve && existing?.originalLauncher
+      ? existing.originalLauncher
+      : String(project.originalLauncher ?? existing?.originalLauncher ?? '')
+    const profile = preserve && existing?.profile
+      ? existing.profile
+      : String(project.profile ?? existing?.profile ?? '')
+    const row = {
+      name,
+      cwd: String(project.cwd ?? existing?.cwd ?? ''),
+      displayName: String(project.displayName ?? existing?.displayName ?? name),
+      launcher,
+      originalLauncher,
+      profile,
+      lastChannelIndex: project.lastChannelIndex !== undefined ? normalizeChannelIndex(project.lastChannelIndex) : existing?.lastChannelIndex,
+      status: normalizeRecordStatus(project.status ?? existing?.status ?? 'active'),
+      createdAt: existing?.createdAt || ts,
+      updatedAt: ts,
+      restoredAt: project.restoredAt ?? existing?.restoredAt ?? null,
+    }
+    this.db.prepare(`
+      INSERT INTO tmux_projects (
+        name, cwd, display_name, launcher, original_launcher, profile, last_channel_index,
+        status, created_at, updated_at, restored_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET
+        cwd = excluded.cwd,
+        display_name = excluded.display_name,
+        launcher = excluded.launcher,
+        original_launcher = excluded.original_launcher,
+        profile = excluded.profile,
+        last_channel_index = excluded.last_channel_index,
+        status = excluded.status,
+        updated_at = excluded.updated_at,
+        restored_at = excluded.restored_at
+    `).run(
+      row.name,
+      row.cwd,
+      row.displayName,
+      row.launcher,
+      row.originalLauncher,
+      row.profile,
+      row.lastChannelIndex,
+      row.status,
+      row.createdAt,
+      row.updatedAt,
+      row.restoredAt,
+    )
+    return this.getTmuxProject(name)
+  }
+
+  upsertTmuxChannel(channel = {}, opts = {}) {
+    const project = normalizeProjectName(channel.project)
+    if (!project) throw new Error('project required')
+    const channelIndex = normalizeChannelIndex(channel.channelIndex ?? channel.index)
+    const existing = this.getTmuxChannel(project, channelIndex)
+    const preserve = Boolean(opts.preserveExistingLauncher)
+    const ts = nowIso()
+    const launcher = preserve && existing?.launcher
+      ? existing.launcher
+      : normalizeLauncher(channel.launcher ?? existing?.launcher, 'bash')
+    const originalLauncher = preserve && existing?.originalLauncher
+      ? existing.originalLauncher
+      : String(channel.originalLauncher ?? existing?.originalLauncher ?? '')
+    const profile = preserve && existing?.profile
+      ? existing.profile
+      : String(channel.profile ?? existing?.profile ?? '')
+    const row = {
+      project,
+      channelIndex,
+      name: String(channel.name ?? existing?.name ?? ''),
+      cwd: String(channel.cwd ?? existing?.cwd ?? ''),
+      launcher,
+      originalLauncher,
+      profile,
+      status: normalizeRecordStatus(channel.status ?? existing?.status ?? 'active'),
+      createdAt: existing?.createdAt || ts,
+      updatedAt: ts,
+      restoredAt: channel.restoredAt ?? existing?.restoredAt ?? null,
+      metadata: channel.metadata ?? existing?.metadata ?? {},
+    }
+    this.db.prepare(`
+      INSERT INTO tmux_channels (
+        project, channel_index, name, cwd, launcher, original_launcher, profile,
+        status, created_at, updated_at, restored_at, metadata_json
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project, channel_index) DO UPDATE SET
+        name = excluded.name,
+        cwd = excluded.cwd,
+        launcher = excluded.launcher,
+        original_launcher = excluded.original_launcher,
+        profile = excluded.profile,
+        status = excluded.status,
+        updated_at = excluded.updated_at,
+        restored_at = excluded.restored_at,
+        metadata_json = excluded.metadata_json
+    `).run(
+      row.project,
+      row.channelIndex,
+      row.name,
+      row.cwd,
+      row.launcher,
+      row.originalLauncher,
+      row.profile,
+      row.status,
+      row.createdAt,
+      row.updatedAt,
+      row.restoredAt,
+      toJson(row.metadata, {}),
+    )
+    return this.getTmuxChannel(project, channelIndex)
+  }
+
+  listTmuxProjects({ status = 'active' } = {}) {
+    if (status === 'all') {
+      return this.db.prepare('SELECT * FROM tmux_projects ORDER BY updated_at DESC, name ASC')
+        .all().map(row => this.mapTmuxProjectRow(row))
+    }
+    return this.db.prepare('SELECT * FROM tmux_projects WHERE status = ? ORDER BY updated_at DESC, name ASC')
+      .all(normalizeRecordStatus(status, 'active')).map(row => this.mapTmuxProjectRow(row))
+  }
+
+  listTmuxChannels(project = '', { status = 'active' } = {}) {
+    const projectName = normalizeProjectName(project)
+    const filters = []
+    const args = []
+    if (projectName) {
+      filters.push('project = ?')
+      args.push(projectName)
+    }
+    if (status !== 'all') {
+      filters.push('status = ?')
+      args.push(normalizeRecordStatus(status, 'active'))
+    }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+    return this.db.prepare(`
+      SELECT *
+      FROM tmux_channels
+      ${where}
+      ORDER BY project ASC, channel_index ASC
+    `).all(...args).map(row => this.mapTmuxChannelRow(row))
+  }
+
+  closeTmuxProject(project = '') {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return 0
+    const ts = nowIso()
+    const tx = this.db.transaction(() => {
+      this.db.prepare("UPDATE tmux_projects SET status = 'closed', updated_at = ? WHERE name = ?").run(ts, projectName)
+      this.db.prepare("UPDATE tmux_channels SET status = 'closed', updated_at = ? WHERE project = ?").run(ts, projectName)
+    })
+    tx()
+    return 1
+  }
+
+  closeTmuxChannel(project = '', channelIndex = 0) {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return 0
+    return this.db.prepare("UPDATE tmux_channels SET status = 'closed', updated_at = ? WHERE project = ? AND channel_index = ?")
+      .run(nowIso(), projectName, normalizeChannelIndex(channelIndex)).changes
+  }
+
+  renameTmuxProject(oldProject = '', newProject = '') {
+    const oldName = normalizeProjectName(oldProject)
+    const newName = normalizeProjectName(newProject)
+    if (!oldName || !newName || oldName === newName) return 0
+    const ts = nowIso()
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM tmux_projects WHERE name = ?').run(newName)
+      this.db.prepare('DELETE FROM tmux_channels WHERE project = ?').run(newName)
+      this.db.prepare('UPDATE tmux_projects SET name = ?, display_name = ?, updated_at = ? WHERE name = ?')
+        .run(newName, newName, ts, oldName)
+      this.db.prepare('UPDATE tmux_channels SET project = ?, updated_at = ? WHERE project = ?')
+        .run(newName, ts, oldName)
+    })
+    tx()
+    return 1
+  }
+
+  renameTmuxChannel(project = '', channelIndex = 0, name = '') {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return 0
+    return this.db.prepare('UPDATE tmux_channels SET name = ?, updated_at = ? WHERE project = ? AND channel_index = ?')
+      .run(String(name || ''), nowIso(), projectName, normalizeChannelIndex(channelIndex)).changes
+  }
+
+  setTmuxProjectLastChannel(project = '', channelIndex = 0) {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return 0
+    return this.db.prepare('UPDATE tmux_projects SET last_channel_index = ?, updated_at = ? WHERE name = ?')
+      .run(normalizeChannelIndex(channelIndex), nowIso(), projectName).changes
+  }
+
+  markTmuxProjectRestored(project = '') {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return 0
+    const ts = nowIso()
+    return this.db.prepare('UPDATE tmux_projects SET restored_at = ?, updated_at = ? WHERE name = ?')
+      .run(ts, ts, projectName).changes
+  }
+
+  markTmuxChannelRestored(project = '', channelIndex = 0) {
+    const projectName = normalizeProjectName(project)
+    if (!projectName) return 0
+    const ts = nowIso()
+    return this.db.prepare('UPDATE tmux_channels SET restored_at = ?, updated_at = ? WHERE project = ? AND channel_index = ?')
+      .run(ts, ts, projectName, normalizeChannelIndex(channelIndex)).changes
   }
 
   mapAttentionEventRow(row) {

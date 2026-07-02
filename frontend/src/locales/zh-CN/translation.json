@@ -39,6 +39,7 @@
     "pathHelp": "支持 ~ 表示 home 目录，或直接输入绝对路径",
     "shellType": "Shell 类型",
     "shellClaude": "Claude (默认)",
+    "shellCodex": "Codex",
     "shellZsh": "Zsh",
     "profileLabel": "配置 Profile (可选)",
     "profileDefault": "默认 (不使用 profile)",

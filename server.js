@@ -13,13 +13,21 @@ import https from 'node:https';
 import multer from 'multer';
 import { createNexusStore } from './storage.js';
 import { createPasswordManager, loadEnvFile } from './authPassword.js';
+import { copyMissingLegacyData, resolveNexusDataDir } from './dataDir.js';
+import { buildLauncherCommand, collectProxyVars, inferLauncher } from './launcher.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = join(__dirname, '.env');
 loadEnvFile(ENV_FILE);
 
-// 持久化数据目录（通过 Docker volume 挂载，重建容器不丢失）
-const DATA_DIR = join(__dirname, 'data');
+// Runtime data lives outside the code checkout by default. Repo-local data is
+// kept only as a legacy migration source.
+const LEGACY_DATA_DIR = join(__dirname, 'data');
+const DATA_DIR = resolveNexusDataDir();
+const dataMigration = copyMissingLegacyData({ legacyDataDir: LEGACY_DATA_DIR, dataDir: DATA_DIR, logger: console });
+if (dataMigration.copied.length > 0) {
+  console.log(`[Nexus] Migrated legacy data items to ${DATA_DIR}: ${dataMigration.copied.join(', ')}`);
+}
 const TOOLBAR_CONFIG_FILE = join(DATA_DIR, 'toolbar-config.json');
 const CONFIGS_DIR = join(DATA_DIR, 'configs');
 const TASKS_FILE = join(DATA_DIR, 'tasks.json');
@@ -102,7 +110,27 @@ function commandExists(cmd) {
 }
 
 const INTERACTIVE_SHELL = commandExists('zsh') ? 'zsh' : 'bash';
-const INTERACTIVE_SHELL_CMD = `exec ${INTERACTIVE_SHELL} -i`;
+
+function launcherContext({ launcher = 'bash', profile = '', cwd = '' } = {}) {
+  const proxyVars = collectProxyVars(process.env, CLAUDE_PROXY)
+  const command = buildLauncherCommand({
+    launcher,
+    profile,
+    cwd,
+    proxyVars,
+    interactiveShell: INTERACTIVE_SHELL,
+    runScript: join(__dirname, 'nexus-run-claude.sh'),
+  })
+  return { ...command, proxyVars }
+}
+
+function setTmuxEnvironment(session, values = {}) {
+  for (const [key, value] of Object.entries(values)) {
+    try {
+      execFileSync('tmux', ['set-environment', '-t', session, key, String(value)], { stdio: 'pipe' })
+    } catch {}
+  }
+}
 
 function positiveIntEnv(name, fallback) {
   const value = Number(process.env[name])
@@ -113,10 +141,6 @@ const SCROLLBACK_MAX_LINES = positiveIntEnv('SCROLLBACK_MAX_LINES', 50000);
 const SCROLLBACK_MAX_BUFFER = positiveIntEnv('SCROLLBACK_MAX_BUFFER', 20 * 1024 * 1024);
 const TMUX_HISTORY_LIMIT = positiveIntEnv('TMUX_HISTORY_LIMIT', SCROLLBACK_MAX_LINES);
 const ATTENTION_SUMMARY_LIMIT = 500;
-
-function buildInteractiveShellCmd(prefix = '') {
-  return `${prefix}${INTERACTIVE_SHELL_CMD}`;
-}
 
 function shortAttentionSummary(text, limit = ATTENTION_SUMMARY_LIMIT) {
   return String(text || '')
@@ -354,135 +378,95 @@ app.post('/api/attention-events/:id/dismiss', authMiddleware, (req, res) => {
   }
 })
 
-// POST /api/windows — F-19: 项目-窗口两级结构
-// body: { rel_path?, shell_type?, profile? }
-// - 提供 rel_path: 设置 NEXUS_CWD 并在此目录创建窗口（新项目）
-// - 不提供 rel_path: 读取 NEXUS_CWD 并在此目录创建窗口（新窗口）
+function createWindowInTmux({ tmuxSession, cwd, name, launcher, profile, source }) {
+  const launch = launcherContext({ launcher, profile, cwd })
+  try {
+    execFileSync('tmux', ['has-session', '-t', tmuxSession], { stdio: 'pipe' })
+  } catch {
+    try { execFileSync('tmux', ['new-session', '-d', '-s', tmuxSession, '-n', 'shell', INTERACTIVE_SHELL], { stdio: 'pipe' }) } catch {}
+  }
+  setTmuxEnvironment(tmuxSession, launch.proxyVars)
+  const out = execFileSync('tmux', [
+    'new-window',
+    '-P', '-F', '#{window_index}',
+    '-t', tmuxSession,
+    '-c', cwd,
+    '-n', name,
+    launch.command,
+  ], { encoding: 'utf8', stdio: 'pipe' }).trim()
+  const index = Number(out)
+  if (Number.isFinite(index)) {
+    nexusStore?.upsertTmuxProject?.({
+      name: tmuxSession,
+      cwd,
+      displayName: tmuxSession,
+      launcher,
+      profile: profile || '',
+      lastChannelIndex: index,
+      status: 'active',
+    }, { preserveExistingLauncher: true })
+    nexusStore?.upsertTmuxChannel?.({
+      project: tmuxSession,
+      channelIndex: index,
+      name,
+      cwd,
+      launcher,
+      profile: profile || '',
+      status: 'active',
+      metadata: { source },
+    })
+  }
+  return Number.isFinite(index) ? index : null
+}
+
+// POST /api/windows — legacy project/window creation API
 app.post('/api/windows', authMiddleware, (req, res) => {
-  const { rel_path, shell_type = 'claude', profile } = req.body || {};
-  const tmuxSession = req.query.session || TMUX_SESSION;
+  const { rel_path, shell_type = 'claude', profile } = req.body || {}
+  const tmuxSession = req.query.session || TMUX_SESSION
 
-  let cwd;
+  let cwd
   if (rel_path) {
-    // 新项目：设置 NEXUS_CWD
-    cwd = rel_path.startsWith('/') ? rel_path : `${WORKSPACE_ROOT}/${rel_path}`;
+    cwd = rel_path.startsWith('/') ? rel_path : `${WORKSPACE_ROOT}/${rel_path}`
     try {
-      execSync(`tmux set-environment -t ${tmuxSession} NEXUS_CWD "${cwd}"`);
+      execFileSync('tmux', ['set-environment', '-t', tmuxSession, 'NEXUS_CWD', cwd], { stdio: 'pipe' })
     } catch (err) {
-      return res.status(500).json({ error: 'failed to set NEXUS_CWD: ' + err.message });
+      return res.status(500).json({ error: 'failed to set NEXUS_CWD: ' + err.message })
     }
   } else {
-    // 新窗口：读取 NEXUS_CWD
     try {
-      const envOutput = execSync(`tmux show-environment -t ${tmuxSession} NEXUS_CWD 2>/dev/null`).toString().trim();
-      const match = envOutput.match(/^NEXUS_CWD=(.+)$/);
-      cwd = match ? match[1] : WORKSPACE_ROOT;
+      const envOutput = execSync(`tmux show-environment -t ${tmuxSession} NEXUS_CWD 2>/dev/null`).toString().trim()
+      const match = envOutput.match(/^NEXUS_CWD=(.+)$/)
+      cwd = match ? match[1] : WORKSPACE_ROOT
     } catch {
-      cwd = WORKSPACE_ROOT;
+      cwd = WORKSPACE_ROOT
     }
   }
 
-  // 窗口名称基于目录
-  const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'window';
-
-  // 构建 shell 命令
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  };
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ');
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : '';
-
-  let shellCmd;
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix);
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh');
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`;
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`;
-    }
-  }
-
-  // 确保 tmux session 存在
+  const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'window'
+  const launcher = String(shell_type || 'claude')
   try {
-    execSync(`tmux has-session -t ${tmuxSession} 2>/dev/null || tmux new-session -d -s ${tmuxSession} -n shell "${INTERACTIVE_SHELL}"`);
-  } catch {}
-
-  // 将代理变量设置到 tmux session 环境
-  for (const [key, value] of Object.entries(proxyVars)) {
-    try {
-      execSync(`tmux set-environment -t ${tmuxSession} ${key} "${value}" 2>/dev/null`);
-    } catch {}
+    const index = createWindowInTmux({ tmuxSession, cwd, name, launcher, profile, source: 'legacy-windows-api' })
+    res.json({ name, cwd, shell_type: launcher, profile: profile || null, session: tmuxSession, index })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
   }
+})
 
-  const cmd = `tmux new-window -t ${tmuxSession} -c "${cwd}" -n "${name}" "${shellCmd}"`;
-  exec(cmd, (err) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ name, cwd, shell_type, profile: profile || null, session: tmuxSession });
-  });
-});
-
-// POST /api/sessions — 在 tmux 中创建新 window
-// body: { rel_path, shell_type?, profile?, session? }
-//   shell_type: 'claude' | 'bash' (default: 'claude')
-//   当 shell_type='claude' 时，profile 可选，使用 nexus-run-claude.sh 启动
-//   当 shell_type='bash' 时，启动本地 shell（优先 zsh，不存在时回退 bash）
+// POST /api/sessions — legacy new-window API
 app.post('/api/sessions', authMiddleware, (req, res) => {
-  const { rel_path, shell_type = 'claude', profile, session } = req.body || {};
-  const tmuxSession = session || TMUX_SESSION;
-  if (!rel_path) return res.status(400).json({ error: 'rel_path required' });
-  const cwd = rel_path.startsWith('/') ? rel_path : `${WORKSPACE_ROOT}/${rel_path}`;
-  const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'session';
-
-  // 收集代理变量（宿主机环境 + CLAUDE_PROXY 覆盖）
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  };
-
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ');
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : '';
-
-  let shellCmd;
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix);
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh');
-      shellCmd = `${proxyPrefix}bash "${runScript}" ${profile} ${cwd}`;
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions; ${INTERACTIVE_SHELL_CMD}`;
-    }
-  }
-
-  // 确保 tmux session 存在
+  const { rel_path, shell_type = 'claude', profile, session } = req.body || {}
+  const tmuxSession = session || TMUX_SESSION
+  if (!rel_path) return res.status(400).json({ error: 'rel_path required' })
+  const cwd = rel_path.startsWith('/') ? rel_path : `${WORKSPACE_ROOT}/${rel_path}`
+  const name = cwd.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') || 'session'
+  const launcher = String(shell_type || 'claude')
   try {
-    execSync(`tmux has-session -t ${tmuxSession} 2>/dev/null || tmux new-session -d -s ${tmuxSession} -n shell "${INTERACTIVE_SHELL}"`);
-  } catch {}
-
-  // 将代理变量设置到 tmux session 环境，新窗口才能继承
-  for (const [key, value] of Object.entries(proxyVars)) {
-    try {
-      execSync(`tmux set-environment -t ${tmuxSession} ${key} "${value}" 2>/dev/null`);
-    } catch {}
+    const index = createWindowInTmux({ tmuxSession, cwd, name, launcher, profile, source: 'legacy-sessions-api' })
+    res.json({ name, cwd, shell_type: launcher, profile: profile || null, session: tmuxSession, index })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
   }
-
-  const cmd = `tmux new-window -t ${tmuxSession} -c "${cwd}" -n "${name}" "${shellCmd}"`;
-  exec(cmd, (err) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ name, cwd, shell_type, profile: profile || null, session: tmuxSession });
-  });
-});
+})
 
 // GET /api/configs — 列出所有 claude 配置 profile
 app.get('/api/configs', authMiddleware, (req, res) => {
@@ -1147,6 +1131,11 @@ app.post('/api/sessions/:id/rename', authMiddleware, (req, res) => {
   if (!safeName) return res.status(400).json({ error: 'name required' })
   try {
     execFileSync('tmux', ['rename-window', '-t', `${session}:${index}`, '--', safeName], { stdio: 'pipe' })
+    try {
+      nexusStore?.renameTmuxChannel?.(session, index, safeName)
+    } catch (storeErr) {
+      console.warn('[Nexus] tmux registry channel rename failed:', storeErr.message)
+    }
     res.json({ ok: true, name: safeName })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1249,7 +1238,7 @@ function dedupScrollback(lines, paneHeight) {
 
 // GET /api/config — 服务端配置信息（供前端初始化用）
 app.get('/api/config', authMiddleware, (req, res) => {
-  res.json({ tmuxSession: TMUX_SESSION, workspaceRoot: WORKSPACE_ROOT })
+  res.json({ tmuxSession: TMUX_SESSION, workspaceRoot: WORKSPACE_ROOT, dataDir: DATA_DIR })
 })
 
 // GET /api/tmux-sessions — 列出所有 tmux session（F-18）
@@ -1346,8 +1335,9 @@ function parseTmuxWindowLine(line) {
   const index = Number(parts[0])
   const name = parts[1]
   const active = parts[2]?.trim() === '1'
-  const cwd = parts.slice(3).join(':') || ''
-  return { index, name, active, cwd }
+  const cwd = parts[3] || ''
+  const paneCommand = parts.slice(4).join('|') || ''
+  return { index, name, active, cwd, paneCommand }
 }
 
 function liveChannelsFromTmux(stdout) {
@@ -1357,8 +1347,168 @@ function liveChannelsFromTmux(stdout) {
   return channels
 }
 
+function tmuxSessionExists(sessionName) {
+  try {
+    execFileSync('tmux', ['has-session', '-t', sessionName], { stdio: 'pipe' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function tmuxWindowExists(sessionName, index) {
+  try {
+    const windows = execFileSync('tmux', ['list-windows', '-t', sessionName, '-F', '#{window_index}'], { encoding: 'utf8', stdio: 'pipe' })
+      .trim().split('\n').filter(Boolean)
+    return windows.includes(String(index))
+  } catch {
+    return false
+  }
+}
+
+function safeTmuxName(value, fallback = 'restored') {
+  return String(value || fallback).replace(/[\r\n\t\0:]/g, '').trim().slice(0, 50) || fallback
+}
+
+function restoreTmuxChannelWindow(channel) {
+  if (!channel || !tmuxSessionExists(channel.project) || tmuxWindowExists(channel.project, channel.channelIndex)) return
+  const cwd = channel.cwd || WORKSPACE_ROOT
+  const launch = launcherContext({ launcher: channel.launcher, profile: channel.profile, cwd })
+  const name = safeTmuxName(channel.name, channel.profile || channel.launcher || 'restored')
+  const args = [
+    'new-window',
+    '-P', '-F', '#{window_index}',
+    '-t', channel.project,
+    '-c', cwd,
+    '-n', name,
+    launch.command,
+  ]
+  try {
+    const out = execFileSync('tmux', args, { encoding: 'utf8', stdio: 'pipe' }).trim()
+    let actualIndex = Number(out)
+    if (!Number.isFinite(actualIndex)) actualIndex = channel.channelIndex
+    if (actualIndex !== channel.channelIndex) {
+      try {
+        execFileSync('tmux', ['move-window', '-s', `${channel.project}:${actualIndex}`, '-t', `${channel.project}:${channel.channelIndex}`], { stdio: 'pipe' })
+        actualIndex = channel.channelIndex
+      } catch {}
+    }
+    if (actualIndex === channel.channelIndex) {
+      nexusStore?.markTmuxChannelRestored?.(channel.project, channel.channelIndex)
+    } else {
+      nexusStore?.upsertTmuxChannel?.({
+        ...channel,
+        channelIndex: actualIndex,
+        metadata: { ...(channel.metadata || {}), restoredFromIndex: channel.channelIndex },
+      })
+      nexusStore?.closeTmuxChannel?.(channel.project, channel.channelIndex)
+    }
+  } catch (err) {
+    console.warn(`[Nexus] Failed to restore tmux channel ${channel.project}:${channel.channelIndex}:`, err.message)
+  }
+}
+
+function restoreTmuxProjectSession(project) {
+  if (!project || tmuxSessionExists(project.name)) return
+  const channels = nexusStore?.listTmuxChannels?.(project.name, { status: 'active' }) || []
+  const firstChannel = channels.find(channel => channel.channelIndex === project.lastChannelIndex) || channels[0]
+  const cwd = firstChannel?.cwd || project.cwd || WORKSPACE_ROOT
+  const launcher = firstChannel?.launcher || project.launcher || 'bash'
+  const profile = firstChannel?.profile || project.profile || ''
+  const name = safeTmuxName(firstChannel?.name || project.displayName || project.name, 'restored')
+  const launch = launcherContext({ launcher, profile, cwd })
+  const args = [
+    'new-session', '-d', '-P', '-F', '#{window_index}',
+    '-s', project.name,
+    '-n', name,
+    '-c', cwd,
+    '-e', `NEXUS_CWD=${cwd}`,
+  ]
+  for (const [key, value] of Object.entries(launch.proxyVars)) args.push('-e', `${key}=${value}`)
+  args.push(launch.command)
+  try {
+    const out = execFileSync('tmux', args, { encoding: 'utf8', stdio: 'pipe' }).trim()
+    nexusStore?.markTmuxProjectRestored?.(project.name)
+    const actualIndex = Number(out)
+    if (firstChannel && Number.isFinite(actualIndex)) {
+      if (actualIndex !== firstChannel.channelIndex) {
+        try {
+          execFileSync('tmux', ['move-window', '-s', `${project.name}:${actualIndex}`, '-t', `${project.name}:${firstChannel.channelIndex}`], { stdio: 'pipe' })
+          nexusStore?.markTmuxChannelRestored?.(project.name, firstChannel.channelIndex)
+        } catch {
+          nexusStore?.upsertTmuxChannel?.({
+            ...firstChannel,
+            channelIndex: actualIndex,
+            metadata: { ...(firstChannel.metadata || {}), restoredFromIndex: firstChannel.channelIndex },
+          })
+          nexusStore?.closeTmuxChannel?.(project.name, firstChannel.channelIndex)
+        }
+      } else {
+        nexusStore?.markTmuxChannelRestored?.(project.name, firstChannel.channelIndex)
+      }
+    }
+  } catch (err) {
+    console.warn(`[Nexus] Failed to restore tmux project ${project.name}:`, err.message)
+  }
+}
+
+function reconcileLiveTmuxRegistry() {
+  if (!nexusStore) return
+  let stdout = ''
+  try {
+    stdout = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}|#{session_windows}|#{session_attached}'], { encoding: 'utf8', stdio: 'pipe' })
+  } catch {
+    return
+  }
+  const projects = liveProjectsFromTmux(stdout)
+  for (const project of projects) {
+    try {
+      nexusStore.upsertTmuxProject({
+        name: project.name,
+        cwd: project.path || WORKSPACE_ROOT,
+        displayName: project.name,
+        status: 'active',
+      }, { preserveExistingLauncher: true })
+      const windowsOut = execFileSync('tmux', ['list-windows', '-t', project.name, '-F', '#{window_index}|#{window_name}|#{window_active}|#{pane_current_path}|#{pane_current_command}'], { encoding: 'utf8', stdio: 'pipe' })
+      for (const channel of liveChannelsFromTmux(windowsOut)) {
+        const launcher = inferLauncher({ windowName: channel.name, paneCommand: channel.paneCommand })
+        nexusStore.upsertTmuxChannel({
+          project: project.name,
+          channelIndex: channel.index,
+          name: channel.name,
+          cwd: channel.cwd || project.path || WORKSPACE_ROOT,
+          launcher,
+          status: 'active',
+          metadata: { source: 'tmux-reconcile', paneCommand: channel.paneCommand || '' },
+        }, { preserveExistingLauncher: true })
+        if (channel.active) nexusStore.setTmuxProjectLastChannel(project.name, channel.index)
+      }
+    } catch (err) {
+      console.warn(`[Nexus] tmux registry reconcile failed for ${project.name}:`, err.message)
+    }
+  }
+}
+
+let restoreInProgress = false
+function restoreAndReconcileTmuxRegistry() {
+  if (!nexusStore || restoreInProgress) return
+  restoreInProgress = true
+  try {
+    const projects = nexusStore.listTmuxProjects({ status: 'active' })
+    for (const project of projects) restoreTmuxProjectSession(project)
+    const channels = nexusStore.listTmuxChannels('', { status: 'active' })
+    for (const channel of channels) restoreTmuxChannelWindow(channel)
+    reconcileLiveTmuxRegistry()
+  } catch (err) {
+    console.warn('[Nexus] tmux registry restore failed:', err.message)
+  } finally {
+    restoreInProgress = false
+  }
+}
+
 // GET /api/projects — 列出所有 Projects（tmux sessions）
 app.get('/api/projects', authMiddleware, (req, res) => {
+  restoreAndReconcileTmuxRegistry()
   exec('tmux list-sessions -F "#{session_name}|#{session_windows}|#{session_attached}"', (err, stdout) => {
     if (err) return res.json([])
     const projects = liveProjectsFromTmux(stdout)
@@ -1408,8 +1558,9 @@ app.get('/api/session-cwd', authMiddleware, (req, res) => {
 // GET /api/projects/:name/channels — 列出指定 Project 的 Channels（windows）
 app.get('/api/projects/:name/channels', authMiddleware, (req, res) => {
   const sessionName = req.params.name
+  restoreAndReconcileTmuxRegistry()
   exec(
-    `tmux list-windows -t ${sessionName} -F "#{window_index}|#{window_name}|#{window_active}|#{pane_current_path}"`,
+    `tmux list-windows -t ${sessionName} -F "#{window_index}|#{window_name}|#{window_active}|#{pane_current_path}|#{pane_current_command}"`,
     (err, stdout) => {
       if (err) return res.status(500).json({ error: err.message })
       const channels = liveChannelsFromTmux(stdout)
@@ -1497,31 +1648,8 @@ app.post('/api/projects', authMiddleware, (req, res) => {
     }
   } catch {}
 
-  // 构建 shell 命令
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  }
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ')
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : ''
-
-  let shellCmd
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix)
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh')
-      // claude 失败时给出提示，再 fallback 到交互 shell，避免窗口看起来"没反应"
-      // 注意：提示文本里不能有 `"`；用单引号避免与 execFileSync 的参数边界冲突
-      shellCmd = `${proxyPrefix}bash '${runScript}' ${profile} '${cwd}' || echo; echo '[Nexus] claude 退出或启动失败，fallback 到 ${INTERACTIVE_SHELL}（可直接输入 claude 重试）'; ${INTERACTIVE_SHELL_CMD}`
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions || echo; echo '[Nexus] claude 退出或启动失败，请确认已 claude login 或配置 API key'; ${INTERACTIVE_SHELL_CMD}`
-    }
-  }
+  const launcher = String(shell_type || 'claude')
+  const launch = launcherContext({ launcher, profile, cwd })
 
   // 初始窗口名使用目录名[-profile名]（取路径最后一部分）
   const dirName = cwd.replace(/^\/+|\/+$/g, '').split('/').pop() || '~'
@@ -1533,23 +1661,50 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   // 同时把 NEXUS_CWD 和 proxy vars 通过 `-e KEY=VAL` 在 new-session 时一次性注入，
   // 避免 session 存活不稳时后置 set-environment 失败
   const newSessionArgs = [
-    'new-session', '-d',
+    'new-session', '-d', '-P', '-F', '#{window_index}',
     '-s', finalName,
     '-n', initialWindowName,
     '-c', cwd,
     '-e', `NEXUS_CWD=${cwd}`,
   ]
-  for (const [key, value] of Object.entries(proxyVars)) {
+  for (const [key, value] of Object.entries(launch.proxyVars)) {
     newSessionArgs.push('-e', `${key}=${value}`)
   }
-  newSessionArgs.push(shellCmd)
+  newSessionArgs.push(launch.command)
+  let initialWindowIndex = 0
   try {
-    execFileSync('tmux', newSessionArgs, { stdio: 'pipe' })
+    const out = execFileSync('tmux', newSessionArgs, { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const parsed = Number(out)
+    if (Number.isFinite(parsed)) initialWindowIndex = parsed
   } catch (err) {
     return res.status(500).json({ error: 'failed to create project: ' + err.message })
   }
 
-  res.json({ name: finalName, path: cwd, shell_type, profile: profile || null })
+  try {
+    nexusStore?.upsertTmuxProject?.({
+      name: finalName,
+      cwd,
+      displayName: finalName,
+      launcher,
+      profile: profile || '',
+      lastChannelIndex: initialWindowIndex,
+      status: 'active',
+    })
+    nexusStore?.upsertTmuxChannel?.({
+      project: finalName,
+      channelIndex: initialWindowIndex,
+      name: initialWindowName,
+      cwd,
+      launcher,
+      profile: profile || '',
+      status: 'active',
+      metadata: { source: 'nexus-create-project' },
+    })
+  } catch (storeErr) {
+    console.warn('[Nexus] tmux registry project create failed:', storeErr.message)
+  }
+
+  res.json({ name: finalName, path: cwd, shell_type: launcher, profile: profile || null })
 })
 
 // POST /api/projects/:name/channels — 在指定 Project 中新建 Channel（window）
@@ -1583,29 +1738,8 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
     }
   } catch {}
 
-  // 构建 shell 命令
-  const proxyVars = {
-    ...(process.env.HTTP_PROXY  ? { HTTP_PROXY:  process.env.HTTP_PROXY  } : {}),
-    ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-    ...(process.env.ALL_PROXY   ? { ALL_PROXY:   process.env.ALL_PROXY   } : {}),
-    ...(process.env.http_proxy  ? { http_proxy:  process.env.http_proxy  } : {}),
-    ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
-    ...(CLAUDE_PROXY ? { ALL_PROXY: CLAUDE_PROXY, HTTPS_PROXY: CLAUDE_PROXY, HTTP_PROXY: CLAUDE_PROXY, NEXUS_PROXY: CLAUDE_PROXY } : {}),
-  }
-  const proxyExports = Object.entries(proxyVars).map(([k, v]) => `export ${k}='${v}'`).join('; ')
-  const proxyPrefix = proxyExports ? `${proxyExports}; ` : ''
-
-  let shellCmd
-  if (shell_type === 'bash') {
-    shellCmd = buildInteractiveShellCmd(proxyPrefix)
-  } else {
-    if (profile) {
-      const runScript = join(__dirname, 'nexus-run-claude.sh')
-      shellCmd = `${proxyPrefix}bash '${runScript}' ${profile} '${cwd}' || echo; echo '[Nexus] claude 退出或启动失败，fallback 到 ${INTERACTIVE_SHELL}（可直接输入 claude 重试）'; ${INTERACTIVE_SHELL_CMD}`
-    } else {
-      shellCmd = `${proxyPrefix}claude --dangerously-skip-permissions || echo; echo '[Nexus] claude 退出或启动失败，请确认已 claude login 或配置 API key'; ${INTERACTIVE_SHELL_CMD}`
-    }
-  }
+  const launcher = String(shell_type || 'claude')
+  const launch = launcherContext({ launcher, profile, cwd })
 
   // 确保 session 存在
   try {
@@ -1618,14 +1752,42 @@ app.post('/api/projects/:name/channels', authMiddleware, (req, res) => {
 
   // 创建新 window —— 改 execFileSync 避免 shellCmd 引号嵌套问题
   try {
-    execFileSync('tmux', [
+    const out = execFileSync('tmux', [
       'new-window',
+      '-P', '-F', '#{window_index}',
       '-t', sessionName,
       '-c', cwd,
       '-n', channelName,
-      shellCmd,
-    ], { stdio: 'pipe' })
-    res.json({ name: channelName, cwd, shell_type, profile: profile || null, project: sessionName })
+      launch.command,
+    ], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const parsedIndex = Number(out)
+    const channelIndex = Number.isFinite(parsedIndex) ? parsedIndex : null
+    if (channelIndex !== null) {
+      try {
+        nexusStore?.upsertTmuxProject?.({
+          name: sessionName,
+          cwd,
+          displayName: sessionName,
+          launcher,
+          profile: profile || '',
+          lastChannelIndex: channelIndex,
+          status: 'active',
+        }, { preserveExistingLauncher: true })
+        nexusStore?.upsertTmuxChannel?.({
+          project: sessionName,
+          channelIndex,
+          name: channelName,
+          cwd,
+          launcher,
+          profile: profile || '',
+          status: 'active',
+          metadata: { source: 'nexus-create-channel' },
+        })
+      } catch (storeErr) {
+        console.warn('[Nexus] tmux registry channel create failed:', storeErr.message)
+      }
+    }
+    res.json({ name: channelName, cwd, shell_type: launcher, profile: profile || null, project: sessionName, index: channelIndex })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -1647,6 +1809,12 @@ app.post('/api/projects/:name/activate', authMiddleware, (req, res) => {
     const match = envOutput.match(/^NEXUS_LAST_CHANNEL=(\d+)$/)
     if (match) lastChannel = parseInt(match[1], 10)
   } catch {}
+  if (lastChannel === null) {
+    try {
+      const stored = nexusStore?.getTmuxProject?.(sessionName)
+      if (stored?.lastChannelIndex !== null && stored?.lastChannelIndex !== undefined) lastChannel = stored.lastChannelIndex
+    } catch {}
+  }
   // 验证 channel 是否存在，不存在则返回 null（前端会用第一个）
   if (lastChannel !== null) {
     try {
@@ -1694,6 +1862,7 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
     execFileSync('tmux', ['rename-session', '-t', oldName, '--', sanitizedNewName], { stdio: 'pipe' })
     try {
       nexusStore?.renameProjectOrder?.(oldName, sanitizedNewName)
+      nexusStore?.renameTmuxProject?.(oldName, sanitizedNewName)
     } catch (storeErr) {
       console.warn('[Nexus] project order rename migration failed:', storeErr.message)
     }
@@ -1715,6 +1884,11 @@ app.delete('/api/projects/:name', authMiddleware, (req, res) => {
   // kill session
   exec(`tmux kill-session -t ${sessionName}`, (err) => {
     if (err) return res.status(500).json({ error: err.message })
+    try {
+      nexusStore?.closeTmuxProject?.(sessionName)
+    } catch (storeErr) {
+      console.warn('[Nexus] tmux registry project close failed:', storeErr.message)
+    }
     res.json({ ok: true })
   })
 })
@@ -1750,12 +1924,14 @@ app.delete('/api/sessions/:id', authMiddleware, (req, res) => {
       exec(`tmux new-window -t ${session} -n shell "${INTERACTIVE_SHELL}"`, () => {
         exec(`tmux kill-window -t ${session}:${index}`, (err) => {
           if (err) return res.status(500).json({ error: err.message })
+          try { nexusStore?.closeTmuxChannel?.(session, index) } catch (storeErr) { console.warn('[Nexus] tmux registry channel close failed:', storeErr.message) }
           res.json({ ok: true })
         })
       })
     } else {
       exec(`tmux kill-window -t ${session}:${index}`, (err) => {
         if (err) return res.status(500).json({ error: err.message })
+        try { nexusStore?.closeTmuxChannel?.(session, index) } catch (storeErr) { console.warn('[Nexus] tmux registry channel close failed:', storeErr.message) }
         res.json({ ok: true })
       })
     }
@@ -1771,6 +1947,7 @@ app.post('/api/sessions/:id/attach', authMiddleware, (req, res) => {
     // 记录最后激活的 channel 到环境变量
     try {
       execSync(`tmux set-environment -t ${session} NEXUS_LAST_CHANNEL ${index}`)
+      nexusStore?.setTmuxProjectLastChannel?.(session, index)
     } catch {}
     res.json({ ok: true })
   })
@@ -2627,6 +2804,7 @@ server.listen(Number(PORT), '0.0.0.0', () => {
     execSync(`tmux set-option -g history-limit ${TMUX_HISTORY_LIMIT} 2>/dev/null || true`);
     const defaultWindowName = WORKSPACE_ROOT.replace(/^\/+|\/+$/, '').split('/').pop() || '~'
     execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n "${defaultWindowName}" -c "${WORKSPACE_ROOT}" "${INTERACTIVE_SHELL}"`);
+    restoreAndReconcileTmuxRegistry()
     console.log(`tmux session '${TMUX_SESSION}' ready`);
   } catch (e) { console.warn('tmux session init failed:', e.message); }
 });
