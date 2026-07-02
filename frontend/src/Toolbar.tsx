@@ -90,6 +90,9 @@ const COLLAPSED_KEY = 'nexus_toolbar_collapsed'
 
 // PC 端断点
 const PC_BREAKPOINT = 1024
+const REPEATABLE_KEY_IDS = new Set(['up', 'down', 'left', 'right'])
+const KEY_REPEAT_INITIAL_DELAY_MS = 320
+const KEY_REPEAT_INTERVAL_MS = 75
 
 function loadConfig(): ToolbarConfig {
   try {
@@ -168,6 +171,8 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   const rootRef = useRef<HTMLDivElement>(null)
   const editScrollRef = useRef<HTMLDivElement>(null)
   const isDraggingMouse = useRef(false)
+  const repeatTimeoutRef = useRef<number | null>(null)
+  const repeatIntervalRef = useRef<number | null>(null)
 
   // Guard xterm textarea when editing panel is open (prevents keyboard popup)
   useOverlayGuard(_termRef, editing)
@@ -290,8 +295,32 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     setRecommendations(prev => prev.filter(r => r.keyId !== keyId))
   }
 
-  async function handleKey(key: KeyDef) {
-    reportShortcutUsage(key)
+  function stopKeyRepeat() {
+    if (repeatTimeoutRef.current !== null) {
+      window.clearTimeout(repeatTimeoutRef.current)
+      repeatTimeoutRef.current = null
+    }
+    if (repeatIntervalRef.current !== null) {
+      window.clearInterval(repeatIntervalRef.current)
+      repeatIntervalRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    window.addEventListener('blur', stopKeyRepeat)
+    return () => {
+      window.removeEventListener('blur', stopKeyRepeat)
+      stopKeyRepeat()
+    }
+  }, [])
+
+  function sendShortcutSequence(key: KeyDef) {
+    if (key.seq) sendToWs(key.seq)
+  }
+
+  async function handleKey(key: KeyDef, options: { reportUsage?: boolean } = {}) {
+    const { reportUsage = true } = options
+    if (reportUsage) reportShortcutUsage(key)
     if (key.action === 'scrollToBottom') {
       scrollToBottom()
     } else if (key.action === 'pasteClipboard') {
@@ -342,8 +371,28 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         // ignore
       }
     } else {
-      sendToWs(key.seq)
+      sendShortcutSequence(key)
     }
+  }
+
+  function isRepeatableKey(key: KeyDef) {
+    return !key.action && REPEATABLE_KEY_IDS.has(key.id)
+  }
+
+  function handleShortcutPointerDown(e: React.PointerEvent<HTMLButtonElement>, key: KeyDef) {
+    e.preventDefault()
+    e.stopPropagation()
+    stopKeyRepeat()
+    handleKey(key)
+    if (!isRepeatableKey(key)) return
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    repeatTimeoutRef.current = window.setTimeout(() => {
+      repeatTimeoutRef.current = null
+      sendShortcutSequence(key)
+      repeatIntervalRef.current = window.setInterval(() => {
+        sendShortcutSequence(key)
+      }, KEY_REPEAT_INTERVAL_MS)
+    }, KEY_REPEAT_INITIAL_DELAY_MS)
   }
 
   function removeKey(_section: 'pinned' | 'expanded' | 'all', id: string) {
@@ -832,7 +881,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               <button
                 key={id}
                 className={keyEmbeddedClass}
-                onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                onPointerDown={(e) => handleShortcutPointerDown(e, key)}
+                onPointerUp={stopKeyRepeat}
+                onPointerCancel={stopKeyRepeat}
+                onPointerLeave={stopKeyRepeat}
+                onLostPointerCapture={stopKeyRepeat}
                 title={t(key.desc)}
               >{key.label}</button>
             )
@@ -905,7 +958,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 <button
                   key={id}
                   className={keyPCClass}
-                  onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                  onPointerDown={(e) => handleShortcutPointerDown(e, key)}
+                  onPointerUp={stopKeyRepeat}
+                  onPointerCancel={stopKeyRepeat}
+                  onPointerLeave={stopKeyRepeat}
+                  onLostPointerCapture={stopKeyRepeat}
                 >
                   {key.label}
                 </button>
@@ -983,7 +1040,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                     <button
                       key={id}
                       className={keyPCClass}
-                      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                      onPointerDown={(e) => handleShortcutPointerDown(e, key)}
+                      onPointerUp={stopKeyRepeat}
+                      onPointerCancel={stopKeyRepeat}
+                      onPointerLeave={stopKeyRepeat}
+                      onLostPointerCapture={stopKeyRepeat}
                     >
                       {key.label}
                     </button>
@@ -1181,7 +1242,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 <button
                   key={id}
                   className={keyClass}
-                  onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                  onPointerDown={(e) => handleShortcutPointerDown(e, key)}
+                  onPointerUp={stopKeyRepeat}
+                  onPointerCancel={stopKeyRepeat}
+                  onPointerLeave={stopKeyRepeat}
+                  onLostPointerCapture={stopKeyRepeat}
                   title={t(key.desc)}
                 >
                   {key.label}
@@ -1207,7 +1272,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                     <button
                       key={id}
                       className={keyClass}
-                      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); handleKey(key) }}
+                      onPointerDown={(e) => handleShortcutPointerDown(e, key)}
+                      onPointerUp={stopKeyRepeat}
+                      onPointerCancel={stopKeyRepeat}
+                      onPointerLeave={stopKeyRepeat}
+                      onLostPointerCapture={stopKeyRepeat}
                       title={t(key.desc)}
                     >
                       {key.label}
