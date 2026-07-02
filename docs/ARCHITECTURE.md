@@ -26,9 +26,10 @@ tmux attach-session -t <session>:<window>
 
 1. 加载 `.env`（手动解析，无 dotenv 依赖）
 2. 验证 `JWT_SECRET` 和 `ACC_PASSWORD_HASH`（缺失则 exit(1)）
-3. 确保 `data/` 和 `data/configs/` 存在
-4. 注册 Express 路由 + multipart 上传 + 静态文件
-5. 创建 HTTP server + WebSocketServer（共享端口）
+3. 解析运行数据目录（默认 `~/.nexus4cc/data`, 可用 `NEXUS_DATA_DIR` 覆盖）, 并从仓库旧 `data/` 复制缺失数据
+4. 清理孤儿 running 任务（启动时 status → error）
+5. 注册 Express 路由 + multipart 上传 + 静态文件
+6. 创建 HTTP server + WebSocketServer（共享端口）
 
 ### API Endpoints
 
@@ -75,7 +76,7 @@ tmux attach-session -t <session>:<window>
 | DELETE | `/api/files/content` | Bearer | 删除单个上传文件（`?path=`） |
 | DELETE | `/api/files/all` | Bearer | 清空所有上传文件 |
 | **配置** | | | |
-| GET | `/api/config` | Bearer | 返回 WORKSPACE_ROOT 等配置 |
+| GET | `/api/config` | Bearer | 返回 WORKSPACE_ROOT、数据目录等配置 |
 | GET | `/api/configs` | Bearer | 列出 claude profile |
 | POST | `/api/configs/:id` | Bearer | 创建/更新 profile |
 | DELETE | `/api/configs/:id` | Bearer | 删除 profile |
@@ -238,7 +239,7 @@ Effect B [token, activeWindowIndex] — 管理 WebSocket（窗口切换时重建
 ## 数据层
 
 ```
-data/
+~/.nexus4cc/data/              # 默认; NEXUS_DATA_DIR 可覆盖
 ├── nexus.sqlite           # 单用户本地状态库（设置、快捷键、输入历史、草稿、任务索引、注意力事件）
 ├── toolbar-config.json    # legacy 工具栏布局；首次迁移到 SQLite 后保留作回退
 ├── tasks.json             # legacy 任务历史；首次迁移到 SQLite 后保留作回退
@@ -248,11 +249,12 @@ data/
 ```
 
 **SQLite 边界**:
-- SQLite 是单用户本地“用户状态/索引/事件”存储,不是 tmux session 存储。
-- SQLite 保存:settings、toolbar_layouts、shortcut_usage、input_history、composer_drafts、tasks 索引、attention_events。
-- SQLite 不保存:完整 tmux scrollback、原始 PTY 字节流、浏览器密码/JWT、API key 或环境变量。
-- 项目/频道存在性仍由 `tmux list-sessions` / `tmux list-windows` 查询;scrollback 仍由 `tmux capture-pane` 返回。
-- `data/toolbar-config.json` 与 `data/tasks.json` 首次启动迁移到 SQLite,原文件保留;SQLite 初始化失败时继续使用 legacy JSON 回退。
+- SQLite 是单用户本地“用户状态/索引/事件/恢复映射”存储,不是完整终端历史存储。
+- SQLite 保存:settings、toolbar_layouts、shortcut_usage、input_history、composer_drafts、tasks 索引、attention_events、tmux project/channel restore registry。
+- SQLite 不保存:完整 tmux scrollback、原始 PTY 字节流、浏览器密码/JWT、API key、环境变量或进程内存。
+- 项目/频道当前存在性仍由 `tmux list-sessions` / `tmux list-windows` 查询;scrollback 仍由 `tmux capture-pane` 返回。
+- 启动时会从 registry 重建缺失的 tmux session/window 结构，并按记录的 launcher(`claude`/`codex`/`bash`)重新启动命令；这不是进程级 resume。
+- 旧仓库 `data/toolbar-config.json`、`data/tasks.json`、`data/configs/` 与 `data/nexus.sqlite*` 会在目标数据目录缺失时复制过去,原文件保留;SQLite 初始化失败时继续使用 legacy JSON 回退。
 
 **Polling**:
 - Terminal: `/api/sessions/:id/output?session=` (3s) → windowOutputs (shared to TabBar/Sidebar)
@@ -275,7 +277,7 @@ nexus/
 │   ├── icon.svg           # PWA 图标
 │   ├── manifest.json      # PWA manifest
 │   └── sw.js              # Service Worker（cache-first 静态资源，跳过导航请求）
-└── data/                  # 持久化数据目录
+└── data/                  # legacy 迁移源; 新运行数据默认在 ~/.nexus4cc/data
 ```
 
 ### 环境变量
@@ -287,6 +289,9 @@ nexus/
 | `TMUX_SESSION` | | `main` | 要 attach 的 tmux session 名 |
 | `WORKSPACE_ROOT` | | `/workspace` | 工作区根目录 |
 | `PORT` | | `59000` | 监听端口 |
+| `NEXUS_DATA_DIR` | | `~/.nexus4cc/data` | 运行数据目录（SQLite、configs、legacy JSON） |
+| `TELEGRAM_BOT_TOKEN` | | — | Telegram Bot token（可选） |
+| `TELEGRAM_CHAT_ID` | | — | 允许的 Telegram chat ID（可选） |
 | `CLAUDE_PROXY` | | — | HTTP/HTTPS/ALL proxy for claude CLI（可选） |
 | `GITHUB_REPO` | | — | GitHub 仓库（`owner/repo`），用于版本检查 |
 
