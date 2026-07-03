@@ -3,7 +3,7 @@ export interface KeyDef {
   label: string
   seq: string
   desc: string
-  action?: 'scrollToBottom' | 'pasteClipboard' | 'copyTerminal' | 'fit'
+  action?: 'scrollToBottom' | 'pasteClipboard' | 'copyTerminal' | 'fit' | 'openTerminalHistory'
   category: 'nav' | 'edit' | 'control' | 'input' | 'ui'
 }
 
@@ -57,10 +57,12 @@ export const ALL_KEYS: KeyDef[] = [
   { id: 'bang',       label: '!',     seq: '!',        desc: 'toolbarKeys.bashMode', category: 'input' },
   { id: 'at',         label: '@',     seq: '@',        desc: 'toolbarKeys.filePathComplete', category: 'input' },
   { id: 'backslash',  label: '\\',    seq: '\\',       desc: 'toolbarKeys.backslash', category: 'input' },
-  { id: 'ctrl-v',     label: '^V',    seq: '',         desc: 'toolbarKeys.pasteClipboard', action: 'pasteClipboard', category: 'input' },
+  { id: 'ctrl-v',     label: '^V',    seq: '\x16',     desc: 'toolbarKeys.literalNext', category: 'input' },
+  { id: 'paste-text', label: 'Paste', seq: '',         desc: 'toolbarKeys.pasteText', action: 'pasteClipboard', category: 'input' },
   { id: 'shift-tab',  label: '^⇥',    seq: '\x1b[Z',   desc: 'toolbarKeys.togglePermission', category: 'input' },
 
   // === UI Actions (ui) ===
+  { id: 'terminal-history', label: 'Hist', seq: '',    desc: 'toolbarKeys.terminalHistory', action: 'openTerminalHistory', category: 'ui' },
   { id: 'scroll-btm', label: '↓↓',   seq: '',         desc: 'toolbarKeys.scrollBottom', action: 'scrollToBottom', category: 'ui' },
   { id: 'copy-term',  label: 'Cp',    seq: '',         desc: 'toolbarKeys.copyTerminal', action: 'copyTerminal', category: 'ui' },
   { id: 'fit',        label: 'Fit',   seq: '',         desc: 'toolbarKeys.fitTerminal', action: 'fit', category: 'ui' },
@@ -81,9 +83,9 @@ export const FACTORY_EXPANDED = [
   // Control group
   'ctrl-r', 'ctrl-b', 'ctrl-o', 'ctrl-t', 'ctrl-f', 'ctrl-g',
   // Input group
-  'shift-tab', 'bang', 'at',
+  'shift-tab', 'bang', 'at', 'paste-text',
   // UI Actions
-  'scroll-btm', 'copy-term', 'fit',
+  'terminal-history', 'scroll-btm', 'copy-term', 'fit',
 ]
 
 export const FACTORY_CONFIG: ToolbarConfig = {

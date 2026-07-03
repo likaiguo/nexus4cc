@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { appendCustomKeyToSection, applyRecommendation, mergePresetWithCustom, toolbarDeviceType } from './src/toolbarPresets'
-import { FACTORY_CONFIG, type ToolbarConfig } from './src/toolbarDefaults'
+import { appendCustomKeyToSection, applyRecommendation, mergePresetWithCustom, toolbarDeviceType, TOOLBAR_PRESETS } from './src/toolbarPresets'
+import { ALL_KEYS, FACTORY_CONFIG, type ToolbarConfig } from './src/toolbarDefaults'
 import fs from 'node:fs'
 
 let passed = 0
@@ -64,7 +64,30 @@ test('factory expanded shortcuts keep the original expanded order', () => {
   assert.deepEqual(FACTORY_CONFIG.expanded, [
     'alt-b', 'alt-f', 'ctrl-d', 'ctrl-u', 'ctrl-j', 'ctrl-k', 'ctrl-l', 'ctrl-y', 'ctrl-z',
     'ctrl-r', 'ctrl-b', 'ctrl-o', 'ctrl-t', 'ctrl-f', 'ctrl-g', 'shift-tab', 'bang', 'at',
-    'scroll-btm', 'copy-term', 'fit',
+    'paste-text', 'terminal-history', 'scroll-btm', 'copy-term', 'fit',
+  ])
+})
+
+test('toolbar separates terminal Ctrl+V from app-level text paste', () => {
+  const ctrlV = ALL_KEYS.find(key => key.id === 'ctrl-v')
+  const pasteText = ALL_KEYS.find(key => key.id === 'paste-text')
+  assert.equal(ctrlV?.label, '^V')
+  assert.equal(ctrlV?.seq, '\x16')
+  assert.equal(ctrlV?.action, undefined)
+  assert.equal(ctrlV?.desc, 'toolbarKeys.literalNext')
+  assert.equal(pasteText?.label, 'Paste')
+  assert.equal(pasteText?.seq, '')
+  assert.equal(pasteText?.action, 'pasteClipboard')
+  assert.equal(pasteText?.desc, 'toolbarKeys.pasteText')
+})
+
+test('toolbar presets add paste text and terminal history without changing fixed rows', () => {
+  for (const preset of TOOLBAR_PRESETS) {
+    assert.ok(preset.config.expanded.includes('paste-text'), `${preset.id} includes paste-text`)
+    assert.ok(preset.config.expanded.includes('terminal-history'), `${preset.id} includes terminal-history`)
+  }
+  assert.deepEqual(TOOLBAR_PRESETS.find(preset => preset.id === 'mobile-minimal')?.config.pinned, [
+    'esc', 'ctrl-c', 'ctrl-v', 'enter', 'tab', 'slash', 'up', 'down', 'left', 'right',
   ])
 })
 
@@ -109,6 +132,10 @@ test('mobile system actions expose workspace and keep edit shortcuts in quick me
   assert.match(
     toolbarSource,
     /onOpenWorkspace &&[\s\S]*t\('toolbar\.workspace'\)[\s\S]*t\('toolbar\.expand'\)[\s\S]*composerControls &&[\s\S]*attentionEntry && attentionEntry\.count > 0[\s\S]*ref=\{menuBtnRef\}/,
+  )
+  assert.match(
+    toolbarSource,
+    /onOpenTerminalHistory &&[\s\S]*onOpenTerminalHistory\(\); setShowQuickMenu\(false\)[\s\S]*t\('toolbar\.terminalHistory'\)/,
   )
   assert.doesNotMatch(
     mobileSource,
@@ -171,12 +198,60 @@ test('mobile quick menu includes a first-row collapse action', () => {
 
 test('composer draft can be collapsed and history replay opens composer', () => {
   const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
-  assert.match(terminalSource, /const showMobileComposerPanel = !isWidePC && composerMode === 'composer'/)
+  assert.match(terminalSource, /const showComposerPanel = composerMode === 'composer'/)
+  assert.match(terminalSource, /const showMobileComposerPanel = !isWidePC && showComposerPanel/)
+  assert.match(terminalSource, /const showDesktopComposerPanel = isWidePC && showComposerPanel/)
   assert.doesNotMatch(terminalSource, /composerMode === 'composer' \|\| hasComposerDraft/)
+  assert.match(terminalSource, /composerControls: \{[\s\S]*onOpen: openComposer[\s\S]*onToggleHistory: handleComposerHistoryToggle/)
   assert.match(
     terminalSource,
     /function applyComposerHistory\(item: InputHistoryItem\) \{[\s\S]*composerModeRef\.current = 'composer'[\s\S]*setComposerMode\('composer'\)[\s\S]*setComposerDraftWithCursor\(item\.text, item\.text\.length\)/,
   )
+})
+
+test('composer key handling sends on Enter and keeps Shift Enter as newline', () => {
+  const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
+  const handlerStart = terminalSource.indexOf('function handleComposerKeyDown')
+  const handlerSource = terminalSource.slice(handlerStart, handlerStart + 520)
+  assert.match(handlerSource, /if \(composerImeRef\.current \|\| e\.nativeEvent\.isComposing\) return/)
+  assert.match(handlerSource, /if \(e\.key !== 'Enter'\) return/)
+  assert.match(handlerSource, /if \(e\.shiftKey\) \{[\s\S]*updateComposerSelection\(\)[\s\S]*return[\s\S]*\}/)
+  assert.match(handlerSource, /e\.preventDefault\(\)[\s\S]*handleComposerSend\(\)/)
+  assert.doesNotMatch(handlerSource, /!e\.altKey/)
+})
+
+test('direct terminal Shift Enter sends line-feed and Ctrl/Cmd+V stays native', () => {
+  const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
+  assert.match(terminalSource, /seq = e\.shiftKey \? '\\n' : '\\r'/)
+  assert.match(terminalSource, /if \(clipboardMod && clipboardKey === 'v'\) return/)
+  assert.doesNotMatch(terminalSource, /document\.addEventListener\('paste', handlePaste\)/)
+  assert.doesNotMatch(terminalSource, /navigator\.clipboard\.read\(\)/)
+})
+
+test('terminal history is explicit on PC/mobile and restores input path on close', () => {
+  const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
+  const toolbarSource = fs.readFileSync('frontend/src/Toolbar.tsx', 'utf8')
+  assert.match(terminalSource, /const openTerminalHistory = useCallback\(\(\) => \{[\s\S]*triggerScrollbackRef\.current\(\)/)
+  assert.match(terminalSource, /onOpenTerminalHistory: openTerminalHistory/)
+  assert.match(terminalSource, /scrollbackRestoreRef\.current = \{ composer: composerModeRef\.current === 'composer', keyboardVisible: keyboardVisibleRef\.current \}/)
+  assert.match(terminalSource, /if \(restore\?\.composer && composerModeRef\.current === 'composer'\) \{[\s\S]*composerTextareaRef\.current\?\.focus\(\)/)
+  assert.match(terminalSource, /if \(deltaY > 0\) \{[\s\S]*swipeUpAccumRef\.current \+= deltaY/)
+  assert.match(toolbarSource, /title=\{t\('toolbar\.terminalHistory'\)\}/)
+  assert.match(toolbarSource, /aria-label=\{t\('toolbar\.terminalHistory'\)\}/)
+})
+
+test('app-level paste sheet is text-only and upload stays explicit', () => {
+  const toolbarSource = fs.readFileSync('frontend/src/Toolbar.tsx', 'utf8')
+  const pasteStart = toolbarSource.indexOf('const pasteBoxEl = showPasteBox')
+  const pasteSource = toolbarSource.slice(pasteStart, pasteStart + 1800)
+  assert.match(pasteSource, /t\('toolbar\.pasteText'\)/)
+  assert.match(pasteSource, /t\('toolbar\.pasteTextPlaceholder'\)/)
+  assert.match(pasteSource, /t\('toolbar\.sendText'\)/)
+  assert.doesNotMatch(pasteSource, /onUploadFile/)
+  assert.doesNotMatch(pasteSource, /accept="\*\/\*"/)
+  assert.match(toolbarSource, /navigator\.clipboard\.readText\(\)/)
+  assert.doesNotMatch(toolbarSource, /navigator\.clipboard\.read\(\)/)
+  assert.match(toolbarSource, /title=\{t\('toolbar\.uploadFiles'\)\}/)
 })
 
 test('terminal copy sheet uses selectable static text instead of textarea', () => {

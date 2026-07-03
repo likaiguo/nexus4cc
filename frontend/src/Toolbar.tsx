@@ -24,6 +24,7 @@ interface Props {
   onOpenFiles?: () => void
   onOpenWorkspace?: () => void
   onFitTerminal?: () => void
+  onOpenTerminalHistory?: () => void
   onShowCopySheet?: (text: string) => void
   composerControls?: {
     active: boolean
@@ -129,7 +130,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onFitTerminal, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onFitTerminal, onOpenTerminalHistory, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [deviceType, setDeviceType] = useState<ToolbarDeviceType>(() => toolbarDeviceType(window.innerWidth))
@@ -324,32 +325,18 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     if (key.action === 'scrollToBottom') {
       scrollToBottom()
     } else if (key.action === 'pasteClipboard') {
-      // Try clipboard API silently (HTTPS only); fall back to the paste sheet
+      // Text paste is an app-level action. Image/file upload stays behind
+      // explicit upload controls instead of hiding behind paste.
       pasteInitialRef.current = ''
       if (navigator.clipboard) {
-        let handled = false
         try {
-          const items = await navigator.clipboard.read()
-          for (const item of items) {
-            const imgType = item.types.find(t => t.startsWith('image/'))
-            if (imgType && onUploadFile) {
-              const blob = await item.getType(imgType)
-              onUploadFile(new File([blob], `paste.${imgType.split('/')[1] ?? 'png'}`, { type: imgType }))
-              handled = true; break
-            }
-          }
+          const text = await navigator.clipboard.readText()
+          if (text) pasteInitialRef.current = text
         } catch {}
-        if (!handled) {
-          // Prefill the editable paste box with clipboard text; the user
-          // edits and taps Send to deliver it (do not send directly).
-          try {
-            const text = await navigator.clipboard.readText()
-            if (text) pasteInitialRef.current = text
-          } catch {}
-        }
-        if (handled) return
       }
       setShowPasteBox(true)
+    } else if (key.action === 'openTerminalHistory') {
+      onOpenTerminalHistory?.()
     } else if (key.action === 'fit') {
       onFitTerminal?.()
     } else if (key.action === 'copyTerminal') {
@@ -713,14 +700,14 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     )
   }
 
-  // ---- 统一粘贴 / 上传面板 ----
+  // ---- Text paste sheet ----
   const pasteBoxEl = showPasteBox && createPortal(
     <>
       <div className="fixed inset-0 z-[700]" onClick={() => setShowPasteBox(false)} />
       <div className="fixed bottom-0 left-0 right-0 z-[701] bg-nexus-bg border-t border-nexus-border rounded-t-xl p-3.5 pb-6 shadow-[0_-4px_24px_rgba(0,0,0,0.35)]"
         onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
-          <span className="text-nexus-text text-sm font-semibold">{t('toolbar.pasteUpload')}</span>
+          <span className="text-nexus-text text-sm font-semibold">{t('toolbar.pasteText')}</span>
           <button onPointerDown={(e) => { e.preventDefault(); setShowPasteBox(false) }}
             className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex">
             <Icon name="x" size={20} />
@@ -729,23 +716,8 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         <textarea
           ref={pasteBoxRef}
           rows={3}
-          placeholder={t('toolbar.pastePlaceholder')}
+          placeholder={t('toolbar.pasteTextPlaceholder')}
           className="w-full box-border bg-nexus-bg-2 border border-nexus-border rounded-lg text-nexus-text text-sm p-2.5 resize-none outline-none font-inherit block"
-          onPaste={(e) => {
-            const items = e.clipboardData?.items
-            if (items) {
-              for (let i = 0; i < items.length; i++) {
-                if (items[i].type.startsWith('image/') && onUploadFile) {
-                  e.preventDefault()
-                  const file = items[i].getAsFile()
-                  if (file) { onUploadFile(file); setShowPasteBox(false) }
-                  return
-                }
-              }
-            }
-            // Text paste: let it land in the textarea so the user can keep
-            // editing, then tap Send to deliver.
-          }}
         />
         <button
           className="w-full mt-2 py-2.5 rounded-lg bg-nexus-accent text-white text-sm font-medium cursor-pointer border-none"
@@ -754,18 +726,8 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             if (text) { sendToWs(text); setShowPasteBox(false) }
           }}
         >
-          Send
+          {t('toolbar.sendText')}
         </button>
-        <label className="flex items-center justify-center gap-2 mt-2.5 p-2.5 rounded-lg cursor-pointer bg-nexus-bg-2 border border-nexus-border text-nexus-text-2 text-[13px]">
-          <Icon name="paperclip" size={16} />{t('toolbar.selectFile')}
-          <input ref={pasteFileRef} type="file" accept="*/*" className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0]
-              if (file && onUploadFile) { onUploadFile(file); setShowPasteBox(false) }
-              e.target.value = ''
-            }}
-          />
-        </label>
       </div>
     </>,
     document.body
@@ -862,19 +824,35 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
           })}
         </div>
         {/* Bottom actions: upload + settings */}
-        <div className="flex items-center justify-between px-2 py-1.5 border-t border-nexus-border">
-          <div className="flex items-center gap-0.5">
-            {onOpenWorkspace && (
-              <button
-                className={iconBtnPCClass}
+          <div className="flex items-center justify-between px-2 py-1.5 border-t border-nexus-border">
+            <div className="flex items-center gap-0.5">
+              {onOpenWorkspace && (
+                <button
+                  className={iconBtnPCClass}
                 onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace() }}
                 title={t('toolbar.workspace')}
               ><Icon name="folder" size={18} /></button>
             )}
+            {composerControls && (
+              <button
+                className={`${iconBtnPCClass} ${composerControls.active || composerControls.hasDraft ? 'text-nexus-accent bg-nexus-bg-2' : ''}`}
+                onPointerDown={(e) => { e.preventDefault(); composerControls.onOpen() }}
+                title={composerControls.hasDraft ? t('composer.openDraft') : t('composer.open')}
+                aria-label={composerControls.hasDraft ? t('composer.openDraft') : t('composer.open')}
+              ><Icon name="edit" size={18} /></button>
+            )}
+            {onOpenTerminalHistory && (
+              <button
+                className={iconBtnPCClass}
+                onPointerDown={(e) => { e.preventDefault(); onOpenTerminalHistory() }}
+                title={t('toolbar.terminalHistory')}
+                aria-label={t('toolbar.terminalHistory')}
+              ><Icon name="history" size={18} /></button>
+            )}
             <button
               className={iconBtnPCClass}
               onClick={() => { fileInputRef.current?.click() }}
-              title={t('toolbar.pasteUpload')}
+              title={t('toolbar.uploadFiles')}
             ><Icon name="paperclip" size={18} /></button>
           </div>
           <div className="flex items-center gap-0.5">
@@ -938,11 +916,34 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 </button>
               )
             })}
-          </div>
-          {/* 右侧按钮组 */}
-          {onOpenWorkspace && (
-            <button className={iconBtnPCClass} onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace() }} title={t('toolbar.workspace')}>
-              <Icon name="folder" size={18} />
+            </div>
+            {/* 右侧按钮组 */}
+            {onOpenWorkspace && (
+              <button className={iconBtnPCClass} onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace() }} title={t('toolbar.workspace')}>
+                <Icon name="folder" size={18} />
+            </button>
+          )}
+          {composerControls && (
+            <button
+              className={`${iconBtnPCClass} relative ${composerControls.active || composerControls.hasDraft ? 'text-nexus-accent bg-nexus-bg-2' : ''}`}
+              onPointerDown={(e) => { e.preventDefault(); composerControls.onOpen() }}
+              title={composerControls.hasDraft ? t('composer.openDraft') : t('composer.open')}
+              aria-label={composerControls.hasDraft ? t('composer.openDraft') : t('composer.open')}
+            >
+              <Icon name="edit" size={18} />
+              {composerControls.hasDraft && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-nexus-accent" />
+              )}
+            </button>
+          )}
+          {onOpenTerminalHistory && (
+            <button
+              className={iconBtnPCClass}
+              onPointerDown={(e) => { e.preventDefault(); onOpenTerminalHistory() }}
+              title={t('toolbar.terminalHistory')}
+              aria-label={t('toolbar.terminalHistory')}
+            >
+              <Icon name="history" size={18} />
             </button>
           )}
           <button
@@ -958,7 +959,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
               }
               setShowUploadMenu(v => !v)
             }}
-            title={t('toolbar.pasteUpload')}
+            title={t('toolbar.uploadFiles')}
           >
             <Icon name="paperclip" size={18} />
           </button>
@@ -1040,10 +1041,10 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
       {fileInputsEl}
       <div className="flex items-center gap-1 overflow-x-auto overflow-y-hidden px-1.5 py-[3px] min-h-[36px]">
         <div className="flex-1 min-w-0" />
-        <div className="flex items-center gap-1 w-max flex-shrink-0">
-          {onOpenWorkspace && (
-            <button
-              className={iconBtnClass}
+          <div className="flex items-center gap-1 w-max flex-shrink-0">
+            {onOpenWorkspace && (
+              <button
+                className={iconBtnClass}
               onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace() }}
               title={t('toolbar.workspace')}
               aria-label={t('toolbar.workspace')}
@@ -1146,12 +1147,18 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                         <span>{t('composer.clear')}</span>
                       </button>
                       <div className="h-px bg-nexus-border my-1" />
-                    </>
-                  )}
-                  {onOpenWorkspace && (
-                    <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace(); setShowQuickMenu(false) }}>
-                      <Icon name="folder" size={16} />
+                      </>
+                    )}
+                    {onOpenWorkspace && (
+                      <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace(); setShowQuickMenu(false) }}>
+                        <Icon name="folder" size={16} />
                       <span>{t('toolbar.workspace')}</span>
+                    </button>
+                  )}
+                  {onOpenTerminalHistory && (
+                    <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenTerminalHistory(); setShowQuickMenu(false) }}>
+                      <Icon name="history" size={16} />
+                      <span>{t('toolbar.terminalHistory')}</span>
                     </button>
                   )}
                   <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); fileInputRef.current?.click(); setShowQuickMenu(false) }}>
