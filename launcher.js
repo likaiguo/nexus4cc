@@ -1,4 +1,4 @@
-export const KNOWN_LAUNCHERS = new Set(['claude', 'codex', 'bash'])
+export const KNOWN_LAUNCHERS = new Set(['claude', 'codex', 'cfuse', 'bash'])
 
 export function normalizeLauncher(value, fallback = 'bash') {
   const launcher = String(value || '').trim().toLowerCase()
@@ -36,6 +36,7 @@ export function buildLauncherCommand({
   launcher = 'bash',
   profile = '',
   cwd = '',
+  agentSessionId = '',
   proxyVars = {},
   interactiveShell = 'bash',
   runScript = '',
@@ -56,11 +57,31 @@ export function buildLauncherCommand({
     }
   }
 
+  const resumeId = String(agentSessionId || '').trim()
+
   if (effective === 'codex') {
     return {
       launcher: normalized,
       effectiveLauncher: 'codex',
-      command: `${prefix}codex || ${fallbackShell}`,
+      command: `${prefix}${resumeId ? `codex resume ${shellQuote(resumeId)}` : 'codex'} || ${fallbackShell}`,
+      fallback: false,
+    }
+  }
+
+  if (effective === 'cfuse') {
+    return {
+      launcher: normalized,
+      effectiveLauncher: 'cfuse',
+      command: `${prefix}${resumeId ? `cfuse --resume ${shellQuote(resumeId)}` : 'cfuse'} || ${fallbackShell}`,
+      fallback: false,
+    }
+  }
+
+  if (effective === 'claude' && resumeId) {
+    return {
+      launcher: normalized,
+      effectiveLauncher: 'claude',
+      command: `${prefix}claude --resume ${shellQuote(resumeId)} || ${fallbackShell}`,
       fallback: false,
     }
   }
@@ -85,6 +106,7 @@ export function buildLauncherCommand({
 export function inferLauncher({ windowName = '', paneCommand = '' } = {}) {
   const haystack = `${windowName} ${paneCommand}`.toLowerCase()
   if (/\bcodex\b/.test(haystack)) return 'codex'
+  if (/\bcfuse\b/.test(haystack)) return 'cfuse'
   if (/\bclaude\b/.test(haystack)) return 'claude'
   if (/\b(zsh|bash|sh|fish)\b/.test(haystack)) return 'bash'
   return 'bash'

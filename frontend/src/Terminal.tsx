@@ -259,6 +259,7 @@ const WorkspaceBrowser = lazy(() => import('./WorkspaceBrowser'))
 const GeneralSettings = lazy(() => import('./GeneralSettings'))
 const AttentionCenter = lazy(() => import('./AttentionCenter'))
 const QuickPhrasesPanel = lazy(() => import('./QuickPhrasesPanel'))
+const SessionArchivePanel = lazy(() => import('./SessionArchivePanel'))
 
 interface TmuxWindow {
   index: number
@@ -439,6 +440,7 @@ export default function Terminal({ token }: Props) {
   const [showSessionManagerV2, setShowSessionManagerV2] = useState(false)
   const [showAttentionCenter, setShowAttentionCenter] = useState(false)
   const [showQuickPhrases, setShowQuickPhrases] = useState(false)
+  const [showSessionArchives, setShowSessionArchives] = useState(false)
   const [attentionCount, setAttentionCount] = useState(0)
   const [showNewSession, setShowNewSession] = useState(false)
   const [showNewWindow, setShowNewWindow] = useState(false)
@@ -2476,7 +2478,7 @@ export default function Terminal({ token }: Props) {
 
   // Overlay guard: when any overlay opens, set xterm textarea to readOnly
   // to prevent virtual keyboard from appearing when keyboard dismisses
-  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showAttentionCenter || showQuickPhrases || showFiles
+  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showAttentionCenter || showQuickPhrases || showSessionArchives || showFiles
   useEffect(() => {
     if (isWidePC) return
     const ta = termRef.current?.textarea
@@ -2614,6 +2616,7 @@ export default function Terminal({ token }: Props) {
     onOpenFiles: () => setShowFiles(true),
     onOpenWorkspace: () => openWorkspaceBrowser(),
     onOpenQuickPhrases: () => setShowQuickPhrases(true),
+    onOpenSessionArchives: () => setShowSessionArchives(true),
     onOpenTerminalHistory: openTerminalHistory,
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
@@ -2784,6 +2787,15 @@ export default function Terminal({ token }: Props) {
                       aria-label={t('quickPhrases.title')}
                     >
                       <Icon name="message" size={18} />
+                    </button>
+
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowSessionArchives(true); }}
+                      className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                      title={t('sessionArchives.title')}
+                      aria-label={t('sessionArchives.title')}
+                    >
+                      <Icon name="archive" size={18} />
                     </button>
 
                     <button
@@ -3341,6 +3353,20 @@ export default function Terminal({ token }: Props) {
               token={token}
               onClose={() => setShowQuickPhrases(false)}
               onSend={handleQuickPhraseSend}
+            />
+          </Suspense>
+        )}
+        {showSessionArchives && (
+          <Suspense fallback={null}>
+            <SessionArchivePanel
+              token={token}
+              currentProject={activeTmuxSession}
+              currentChannelIndex={activeWindowIndex}
+              onClose={() => setShowSessionArchives(false)}
+              onRestored={(project, channelIndex) => {
+                setShowSessionArchives(false)
+                handleSwitchSession(project, channelIndex)
+              }}
             />
           </Suspense>
         )}

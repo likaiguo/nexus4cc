@@ -4,7 +4,7 @@ import { WebSocketServer } from 'ws';
 import * as pty from 'node-pty';
 import jwt from 'jsonwebtoken';
 import { createServer } from 'node:http';
-import { exec, spawn, execSync, execFileSync } from 'child_process';
+import { exec, spawn, execSync, execFile, execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join, normalize, isAbsolute, basename } from 'path';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, statSync, rmdirSync, renameSync, cpSync, rmSync } from 'fs';
@@ -15,6 +15,7 @@ import { createNexusStore } from './storage.js';
 import { createPasswordManager, loadEnvFile } from './authPassword.js';
 import { copyMissingLegacyData, resolveNexusDataDir } from './dataDir.js';
 import { buildLauncherCommand, collectProxyVars, inferLauncher } from './launcher.js';
+import { buildSessionArchiveInput, plainTerminalText } from './sessionArchive.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = join(__dirname, '.env');
@@ -108,12 +109,13 @@ function commandExists(cmd) {
 
 const INTERACTIVE_SHELL = commandExists('zsh') ? 'zsh' : 'bash';
 
-function launcherContext({ launcher = 'bash', profile = '', cwd = '' } = {}) {
+function launcherContext({ launcher = 'bash', profile = '', cwd = '', agentSessionId = '' } = {}) {
   const proxyVars = collectProxyVars(process.env, CLAUDE_PROXY)
   const command = buildLauncherCommand({
     launcher,
     profile,
     cwd,
+    agentSessionId,
     proxyVars,
     interactiveShell: INTERACTIVE_SHELL,
     runScript: join(__dirname, 'nexus-run-claude.sh'),
@@ -138,6 +140,18 @@ const SCROLLBACK_MAX_LINES = positiveIntEnv('SCROLLBACK_MAX_LINES', 50000);
 const SCROLLBACK_MAX_BUFFER = positiveIntEnv('SCROLLBACK_MAX_BUFFER', 20 * 1024 * 1024);
 const TMUX_HISTORY_LIMIT = positiveIntEnv('TMUX_HISTORY_LIMIT', SCROLLBACK_MAX_LINES);
 const ATTENTION_SUMMARY_LIMIT = 500;
+
+function execFileText(cmd, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { encoding: 'utf8', ...options }, (err, stdout) => {
+      if (err) {
+        reject(err)
+        return
+      }
+      resolve(stdout)
+    })
+  })
+}
 
 function shortAttentionSummary(text, limit = ATTENTION_SUMMARY_LIMIT) {
   return String(text || '')
@@ -1294,22 +1308,194 @@ app.get('/api/sessions/:id/scrollback', authMiddleware, (req, res) => {
   const windowIndex = parseInt(req.params.id, 10)
   const session = req.query.session || TMUX_SESSION
   const requested = Math.max(1, parseInt(req.query.lines || String(SCROLLBACK_MAX_LINES), 10) || SCROLLBACK_MAX_LINES)
-  const target = `${session}:${windowIndex}`
-
-  // Get pane height first, then capture content and dedup ghost frames
-  exec(`tmux display -p -t ${target} '#{pane_height}|#{history_size}' 2>/dev/null`, (err, paneOut) => {
-    const [heightOut, historyOut] = String(paneOut || '').trim().split('|')
-    const paneHeight = parseInt(heightOut, 10) || 50
-    const historySize = Math.max(0, parseInt(historyOut, 10) || 0)
-    const lines = Math.min(Math.max(requested, historySize), SCROLLBACK_MAX_LINES)
-    exec(`tmux capture-pane -e -p -S -${lines} -t ${target} 2>/dev/null`, { maxBuffer: SCROLLBACK_MAX_BUFFER }, (err, stdout) => {
-      if (err) return res.status(500).json({ error: err.message })
-      const rawLines = stdout.split('\n').map(l => l.trimEnd())
-      const content = dedupScrollback(rawLines, paneHeight).join('\n')
-      res.json({ content, requestedLines: requested, capturedLines: lines, historySize })
+  captureTmuxScrollback({ session, windowIndex, requestedLines: requested })
+    .then(result => res.json(result))
+    .catch(err => {
+      res.status(500).json({ error: err.message })
     })
-  })
 })
+
+app.get('/api/session-archives', authMiddleware, (req, res) => {
+  if (!nexusStore?.listSessionArchives) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json({
+      archives: nexusStore.listSessionArchives({
+        project: req.query.project || '',
+        limit: req.query.limit || 100,
+      }),
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/session-archives/:id', authMiddleware, (req, res) => {
+  if (!nexusStore?.getSessionArchive) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const archive = nexusStore.getSessionArchive(req.params.id)
+    if (!archive) return res.status(404).json({ error: 'archive not found' })
+    res.json({ archive })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/session-archives/snapshot', authMiddleware, async (req, res) => {
+  const sessionName = String(req.body?.session || req.query.session || TMUX_SESSION)
+  const channelIndex = parseInt(req.body?.index ?? req.body?.channelIndex ?? req.query.index, 10)
+  if (!Number.isFinite(channelIndex)) return res.status(400).json({ error: 'index required' })
+  try {
+    const archive = await createChannelArchive({ sessionName, channelIndex, status: 'snapshot' })
+    res.json({ ok: true, archive })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/session-archives/:id/restore', authMiddleware, (req, res) => {
+  if (!nexusStore?.getSessionArchive) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const archive = nexusStore.getSessionArchive(req.params.id)
+    if (!archive) return res.status(404).json({ error: 'archive not found' })
+    const restored = restoreSessionArchive(archive)
+    res.json({ ok: true, archiveId: archive.id, ...restored })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+async function captureTmuxScrollback({ session, windowIndex, requestedLines = SCROLLBACK_MAX_LINES }) {
+  const target = `${session}:${windowIndex}`
+  const paneOut = await execFileText('tmux', ['display', '-p', '-t', target, '#{pane_height}|#{history_size}'])
+  const [heightOut, historyOut] = String(paneOut || '').trim().split('|')
+  const paneHeight = parseInt(heightOut, 10) || 50
+  const historySize = Math.max(0, parseInt(historyOut, 10) || 0)
+  const lines = Math.min(Math.max(requestedLines, historySize), SCROLLBACK_MAX_LINES)
+  const stdout = await execFileText('tmux', ['capture-pane', '-e', '-p', '-S', `-${lines}`, '-t', target], { maxBuffer: SCROLLBACK_MAX_BUFFER })
+  const rawLines = stdout.split('\n').map(line => line.trimEnd())
+  const content = dedupScrollback(rawLines, paneHeight).join('\n')
+  return { content, requestedLines, capturedLines: lines, historySize }
+}
+
+function restoreSessionArchive(archive) {
+  const project = archive.project || TMUX_SESSION
+  const cwd = archive.cwd || WORKSPACE_ROOT
+  const name = safeTmuxName(`restore-${archive.windowName || archive.launcher || 'archive'}`, 'restore')
+  const launch = launcherContext({
+    launcher: archive.launcher,
+    profile: archive.profile,
+    cwd,
+    agentSessionId: archiveResumeId(archive),
+  })
+  let channelIndex = 0
+  if (!tmuxSessionExists(project)) {
+    const args = [
+      'new-session', '-d', '-P', '-F', '#{window_index}',
+      '-s', project,
+      '-n', name,
+      '-c', cwd,
+      '-e', `NEXUS_CWD=${cwd}`,
+    ]
+    for (const [key, value] of Object.entries(launch.proxyVars)) args.push('-e', `${key}=${value}`)
+    args.push(launch.command)
+    const out = execFileSync('tmux', args, { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const parsed = Number(out)
+    if (Number.isFinite(parsed)) channelIndex = parsed
+  } else {
+    const out = execFileSync('tmux', [
+      'new-window',
+      '-P', '-F', '#{window_index}',
+      '-t', project,
+      '-c', cwd,
+      '-n', name,
+      launch.command,
+    ], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const parsed = Number(out)
+    if (Number.isFinite(parsed)) channelIndex = parsed
+  }
+  nexusStore?.upsertTmuxProject?.({
+    name: project,
+    cwd,
+    displayName: project,
+    launcher: archive.launcher,
+    profile: archive.profile,
+    lastChannelIndex: channelIndex,
+    status: 'active',
+  }, { preserveExistingLauncher: true })
+  nexusStore?.upsertTmuxChannel?.({
+    project,
+    channelIndex,
+    name,
+    cwd,
+    launcher: archive.launcher,
+    profile: archive.profile,
+    status: 'active',
+    metadata: {
+      source: 'archive-restore',
+      restoredFromArchiveId: archive.id,
+      agentSessionId: archiveResumeId(archive),
+    },
+  })
+  return { project, index: channelIndex, name, cwd, shell_type: archive.launcher, profile: archive.profile || null }
+}
+
+// Remove "ghost frame" duplicates from scrollback caused by full-screen app re-renders.
+// Ghost frames are paneHeight-sized blocks pushed into scrollback when a full-screen app
+// redraws without alternate screen. Detection is purely content-based: hash each line,
+// compute rolling block fingerprints, and remove earlier duplicates. Zero hardcoded patterns.
+function dedupScrollback(lines, paneHeight) {
+  if (lines.length <= paneHeight * 2) return lines
+
+  const stripAnsi = s => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+  const scrollbackEnd = lines.length - paneHeight
+
+  // Hash each line (stripped of ANSI), using djb2
+  const lineHashes = new Int32Array(lines.length)
+  for (let i = 0; i < lines.length; i++) {
+    const s = stripAnsi(lines[i])
+    let h = 5381
+    for (let c = 0; c < s.length; c++) h = ((h << 5) + h + s.charCodeAt(c)) | 0
+    lineHashes[i] = h
+  }
+
+  // Block fingerprint: XOR of weighted line hashes over paneHeight lines
+  function blockFp(start) {
+    let fp = 0
+    for (let i = start; i < start + paneHeight && i < lines.length; i++) {
+      fp = (fp * 31 + lineHashes[i]) | 0
+    }
+    return fp
+  }
+
+  // Build map: fingerprint → last seen position (we keep the latest occurrence)
+  const seen = new Map()
+  const dupes = []
+
+  for (let i = 0; i <= scrollbackEnd - paneHeight; i += paneHeight) {
+    const fp = blockFp(i)
+    if (seen.has(fp)) {
+      // Verify: sample 8 lines to rule out hash collision
+      const prev = seen.get(fp)
+      const step = Math.max(1, paneHeight >> 3)
+      let match = true
+      for (let s = 0; s < paneHeight; s += step) {
+        if (lineHashes[prev + s] !== lineHashes[i + s]) { match = false; break }
+      }
+      if (match) dupes.push(prev)
+    }
+    seen.set(fp, i)
+  }
+
+  if (dupes.length === 0) return lines
+
+  const keep = new Uint8Array(lines.length).fill(1)
+  for (const start of dupes) {
+    const end = Math.min(start + paneHeight, scrollbackEnd)
+    for (let j = start; j < end; j++) keep[j] = 0
+  }
+
+  return lines.filter((_, idx) => keep[idx])
+}
 
 // GET /api/config — 服务端配置信息（供前端初始化用）
 app.get('/api/config', authMiddleware, (req, res) => {
@@ -1441,6 +1627,57 @@ function tmuxWindowExists(sessionName, index) {
   }
 }
 
+function liveChannelInfo(sessionName, channelIndex) {
+  const stored = nexusStore?.getTmuxChannel?.(sessionName, channelIndex)
+  if (stored) return stored
+  try {
+    const out = execFileSync('tmux', [
+      'display', '-p',
+      '-t', `${sessionName}:${channelIndex}`,
+      '#{window_name}|#{pane_current_path}|#{pane_current_command}',
+    ], { encoding: 'utf8', stdio: 'pipe' }).trim()
+    const [name = '', cwd = '', paneCommand = ''] = out.split('|')
+    return {
+      project: sessionName,
+      channelIndex: Number(channelIndex),
+      name,
+      cwd: cwd || WORKSPACE_ROOT,
+      launcher: inferLauncher({ windowName: name, paneCommand }),
+      profile: '',
+      metadata: { source: 'tmux-live-archive', paneCommand },
+      createdAt: null,
+    }
+  } catch {
+    return {
+      project: sessionName,
+      channelIndex: Number(channelIndex),
+      name: '',
+      cwd: WORKSPACE_ROOT,
+      launcher: 'bash',
+      profile: '',
+      metadata: { source: 'archive-fallback' },
+      createdAt: null,
+    }
+  }
+}
+
+async function createChannelArchive({ sessionName, channelIndex, status = 'snapshot' }) {
+  if (!nexusStore?.createSessionArchive) throw new Error('sqlite unavailable')
+  const channel = liveChannelInfo(sessionName, channelIndex)
+  const { content } = await captureTmuxScrollback({ session: sessionName, windowIndex: channelIndex })
+  const capturedText = plainTerminalText(content).trimEnd()
+  return nexusStore.createSessionArchive(buildSessionArchiveInput({
+    channel,
+    capturedText,
+    status,
+    closedAt: status === 'closed' ? new Date().toISOString() : null,
+  }))
+}
+
+function archiveResumeId(archive) {
+  return String(archive?.metadata?.agentSessionId || '').trim()
+}
+
 function safeTmuxName(value, fallback = 'restored') {
   return String(value || fallback).replace(/[\r\n\t\0:]/g, '').trim().slice(0, 50) || fallback
 }
@@ -1448,7 +1685,13 @@ function safeTmuxName(value, fallback = 'restored') {
 function restoreTmuxChannelWindow(channel) {
   if (!channel || !tmuxSessionExists(channel.project) || tmuxWindowExists(channel.project, channel.channelIndex)) return
   const cwd = channel.cwd || WORKSPACE_ROOT
-  const launch = launcherContext({ launcher: channel.launcher, profile: channel.profile, cwd })
+  const archive = channel.metadata?.restoredFromArchiveId ? nexusStore?.getSessionArchive?.(channel.metadata.restoredFromArchiveId) : null
+  const launch = launcherContext({
+    launcher: channel.launcher,
+    profile: channel.profile,
+    cwd,
+    agentSessionId: archiveResumeId(archive),
+  })
   const name = safeTmuxName(channel.name, channel.profile || channel.launcher || 'restored')
   const args = [
     'new-window',
@@ -1491,7 +1734,8 @@ function restoreTmuxProjectSession(project) {
   const launcher = firstChannel?.launcher || project.launcher || 'bash'
   const profile = firstChannel?.profile || project.profile || ''
   const name = safeTmuxName(firstChannel?.name || project.displayName || project.name, 'restored')
-  const launch = launcherContext({ launcher, profile, cwd })
+  const archive = firstChannel?.metadata?.restoredFromArchiveId ? nexusStore?.getSessionArchive?.(firstChannel.metadata.restoredFromArchiveId) : null
+  const launch = launcherContext({ launcher, profile, cwd, agentSessionId: archiveResumeId(archive) })
   const args = [
     'new-session', '-d', '-P', '-F', '#{window_index}',
     '-s', project.name,
@@ -1987,9 +2231,21 @@ app.get('/api/sessions', authMiddleware, (req, res) => {
 })
 
 // DELETE /api/sessions/:id — 关闭 tmux 窗口
-app.delete('/api/sessions/:id', authMiddleware, (req, res) => {
+app.delete('/api/sessions/:id', authMiddleware, async (req, res) => {
   const index = req.params.id
   const session = req.query.session || TMUX_SESSION
+  let archive = null
+  let archiveError = ''
+  const channelIndex = parseInt(index, 10)
+  if (Number.isFinite(channelIndex)) {
+    try {
+      archive = await createChannelArchive({ sessionName: session, channelIndex, status: 'closed' })
+    } catch (err) {
+      archiveError = err.message
+      console.warn(`[Nexus] session archive capture failed for ${session}:${index}:`, err.message)
+    }
+  }
+  const closePayload = () => ({ ok: true, ...(archive ? { archive } : {}), ...(archiveError ? { archiveError } : {}) })
   // Check window count first; if this is the last window, create a fallback
   // window before killing so the tmux session is not destroyed.
   exec(`tmux list-windows -t ${session} -F "#{window_index}" 2>/dev/null | wc -l`, (countErr, countOut) => {
@@ -2000,14 +2256,14 @@ app.delete('/api/sessions/:id', authMiddleware, (req, res) => {
         exec(`tmux kill-window -t ${session}:${index}`, (err) => {
           if (err) return res.status(500).json({ error: err.message })
           try { nexusStore?.closeTmuxChannel?.(session, index) } catch (storeErr) { console.warn('[Nexus] tmux registry channel close failed:', storeErr.message) }
-          res.json({ ok: true })
+          res.json(closePayload())
         })
       })
     } else {
       exec(`tmux kill-window -t ${session}:${index}`, (err) => {
         if (err) return res.status(500).json({ error: err.message })
         try { nexusStore?.closeTmuxChannel?.(session, index) } catch (storeErr) { console.warn('[Nexus] tmux registry channel close failed:', storeErr.message) }
-        res.json({ ok: true })
+        res.json(closePayload())
       })
     }
   })

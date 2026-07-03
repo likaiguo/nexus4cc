@@ -9,7 +9,7 @@ export type IconName =
   | 'check' | 'x' | 'more' | 'settings' | 'chevronDown'
   | 'chevronUp' | 'chevronLeft' | 'chevronRight' | 'grip' | 'trash' | 'plus' | 'copy'
   | 'arrowDown' | 'arrowLeft' | 'arrowRight' | 'message'
-  | 'play' | 'stop' | 'refresh' | 'history' | 'pin' | 'folder'
+  | 'play' | 'stop' | 'refresh' | 'history' | 'archive' | 'pin' | 'folder'
   | 'folderPlus' | 'folderOpen' | 'image' | 'alert' | 'eye' | 'eyeOff' | 'download' | 'file' | 'edit' | 'save' | 'sort' | 'list'
 
 interface Props {
@@ -140,6 +140,13 @@ const ICONS: Record<IconName, React.ReactNode> = {
       <polyline points="1 4 1 10 7 10" />
       <path d="M3.51 15a9 9 0 1 0 .49-4.95" />
       <polyline points="12 7 12 12 15 15" />
+    </g>
+  ),
+  archive: (
+    <g>
+      <rect x="3" y="3" width="18" height="4" rx="1" />
+      <path d="M5 7v13a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7" />
+      <path d="M10 12h4" />
     </g>
   ),
   pin: (

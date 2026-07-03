@@ -24,6 +24,7 @@ interface Props {
   onOpenFiles?: () => void
   onOpenWorkspace?: () => void
   onOpenQuickPhrases?: () => void
+  onOpenSessionArchives?: () => void
   onFitTerminal?: () => void
   onOpenTerminalHistory?: () => void
   onShowCopySheet?: (text: string) => void
@@ -131,7 +132,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenQuickPhrases, onFitTerminal, onOpenTerminalHistory, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenQuickPhrases, onOpenSessionArchives, onFitTerminal, onOpenTerminalHistory, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [deviceType, setDeviceType] = useState<ToolbarDeviceType>(() => toolbarDeviceType(window.innerWidth))
@@ -865,6 +866,14 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                   aria-label={t('quickPhrases.title')}
                 ><Icon name="message" size={18} /></button>
               )}
+              {onOpenSessionArchives && (
+                <button
+                  className={iconBtnPCClass}
+                  onPointerDown={(e) => { e.preventDefault(); onOpenSessionArchives() }}
+                  title={t('sessionArchives.title')}
+                  aria-label={t('sessionArchives.title')}
+                ><Icon name="archive" size={18} /></button>
+              )}
               {onOpenWorkspace && (
                 <button
                   className={iconBtnPCClass}
@@ -965,6 +974,16 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 aria-label={t('quickPhrases.title')}
               >
                 <Icon name="message" size={18} />
+              </button>
+            )}
+            {onOpenSessionArchives && (
+              <button
+                className={iconBtnPCClass}
+                onPointerDown={(e) => { e.preventDefault(); onOpenSessionArchives() }}
+                title={t('sessionArchives.title')}
+                aria-label={t('sessionArchives.title')}
+              >
+                <Icon name="archive" size={18} />
               </button>
             )}
             {onOpenWorkspace && (
@@ -1101,6 +1120,16 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                 <Icon name="message" size={18} />
               </button>
             )}
+            {onOpenSessionArchives && (
+              <button
+                className={iconBtnClass}
+                onPointerDown={(e) => { e.preventDefault(); onOpenSessionArchives() }}
+                title={t('sessionArchives.title')}
+                aria-label={t('sessionArchives.title')}
+              >
+                <Icon name="archive" size={18} />
+              </button>
+            )}
             {onOpenWorkspace && (
               <button
                 className={iconBtnClass}
@@ -1212,6 +1241,12 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                       <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenQuickPhrases(); setShowQuickMenu(false) }}>
                         <Icon name="message" size={16} />
                         <span>{t('quickPhrases.title')}</span>
+                      </button>
+                    )}
+                    {onOpenSessionArchives && (
+                      <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenSessionArchives(); setShowQuickMenu(false) }}>
+                        <Icon name="archive" size={16} />
+                        <span>{t('sessionArchives.title')}</span>
                       </button>
                     )}
                     {onOpenWorkspace && (
