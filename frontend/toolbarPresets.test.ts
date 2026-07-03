@@ -64,26 +64,26 @@ test('factory expanded shortcuts keep the original expanded order', () => {
   assert.deepEqual(FACTORY_CONFIG.expanded, [
     'alt-b', 'alt-f', 'ctrl-d', 'ctrl-u', 'ctrl-j', 'ctrl-k', 'ctrl-l', 'ctrl-y', 'ctrl-z',
     'ctrl-r', 'ctrl-b', 'ctrl-o', 'ctrl-t', 'ctrl-f', 'ctrl-g', 'shift-tab', 'bang', 'at',
-    'paste-text', 'terminal-history', 'scroll-btm', 'copy-term', 'fit',
+    'terminal-history', 'scroll-btm', 'copy-term', 'fit',
   ])
 })
 
-test('toolbar separates terminal Ctrl+V from app-level text paste', () => {
+test('toolbar Ctrl+V is restored as app-level paste upload', () => {
   const ctrlV = ALL_KEYS.find(key => key.id === 'ctrl-v')
   const pasteText = ALL_KEYS.find(key => key.id === 'paste-text')
   assert.equal(ctrlV?.label, '^V')
-  assert.equal(ctrlV?.seq, '\x16')
-  assert.equal(ctrlV?.action, undefined)
-  assert.equal(ctrlV?.desc, 'toolbarKeys.literalNext')
+  assert.equal(ctrlV?.seq, '')
+  assert.equal(ctrlV?.action, 'pasteClipboard')
+  assert.equal(ctrlV?.desc, 'toolbarKeys.pasteClipboard')
   assert.equal(pasteText?.label, 'Paste')
   assert.equal(pasteText?.seq, '')
   assert.equal(pasteText?.action, 'pasteClipboard')
   assert.equal(pasteText?.desc, 'toolbarKeys.pasteText')
 })
 
-test('toolbar presets add paste text and terminal history without changing fixed rows', () => {
+test('toolbar presets avoid duplicate paste text and keep terminal history', () => {
   for (const preset of TOOLBAR_PRESETS) {
-    assert.ok(preset.config.expanded.includes('paste-text'), `${preset.id} includes paste-text`)
+    assert.ok(!preset.config.expanded.includes('paste-text'), `${preset.id} excludes duplicate paste-text`)
     assert.ok(preset.config.expanded.includes('terminal-history'), `${preset.id} includes terminal-history`)
   }
   assert.deepEqual(TOOLBAR_PRESETS.find(preset => preset.id === 'mobile-minimal')?.config.pinned, [
@@ -224,8 +224,6 @@ test('direct terminal Shift Enter sends line-feed and Ctrl/Cmd+V stays native', 
   const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
   assert.match(terminalSource, /seq = e\.shiftKey \? '\\n' : '\\r'/)
   assert.match(terminalSource, /if \(clipboardMod && clipboardKey === 'v'\) return/)
-  assert.doesNotMatch(terminalSource, /document\.addEventListener\('paste', handlePaste\)/)
-  assert.doesNotMatch(terminalSource, /navigator\.clipboard\.read\(\)/)
 })
 
 test('terminal history is explicit on PC/mobile and restores input path on close', () => {
@@ -240,18 +238,31 @@ test('terminal history is explicit on PC/mobile and restores input path on close
   assert.match(toolbarSource, /aria-label=\{t\('toolbar\.terminalHistory'\)\}/)
 })
 
-test('app-level paste sheet is text-only and upload stays explicit', () => {
+test('toolbar paste upload sheet supports text image and file workflows', () => {
   const toolbarSource = fs.readFileSync('frontend/src/Toolbar.tsx', 'utf8')
   const pasteStart = toolbarSource.indexOf('const pasteBoxEl = showPasteBox')
-  const pasteSource = toolbarSource.slice(pasteStart, pasteStart + 1800)
-  assert.match(pasteSource, /t\('toolbar\.pasteText'\)/)
-  assert.match(pasteSource, /t\('toolbar\.pasteTextPlaceholder'\)/)
+  const pasteSource = toolbarSource.slice(pasteStart, pasteStart + 2600)
+  assert.match(pasteSource, /t\('toolbar\.pasteUpload'\)/)
+  assert.match(pasteSource, /t\('toolbar\.pastePlaceholder'\)/)
   assert.match(pasteSource, /t\('toolbar\.sendText'\)/)
-  assert.doesNotMatch(pasteSource, /onUploadFile/)
-  assert.doesNotMatch(pasteSource, /accept="\*\/\*"/)
+  assert.match(pasteSource, /items\[i\]\.type\.startsWith\('image\/'\)/)
+  assert.match(pasteSource, /onUploadFile/)
+  assert.match(pasteSource, /accept="\*\/\*"/)
+  assert.match(pasteSource, /t\('toolbar\.selectFile'\)/)
+  assert.match(toolbarSource, /navigator\.clipboard\.read\(\)/)
   assert.match(toolbarSource, /navigator\.clipboard\.readText\(\)/)
-  assert.doesNotMatch(toolbarSource, /navigator\.clipboard\.read\(\)/)
   assert.match(toolbarSource, /title=\{t\('toolbar\.uploadFiles'\)\}/)
+})
+
+test('terminal surface image paste uploads while text-entry paste stays native', () => {
+  const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
+  assert.match(terminalSource, /function handlePaste\(e: ClipboardEvent\)/)
+  assert.match(terminalSource, /document\.addEventListener\('paste', handlePaste\)/)
+  assert.match(terminalSource, /target\.tagName === 'INPUT'/)
+  assert.match(terminalSource, /target\.tagName === 'TEXTAREA'/)
+  assert.match(terminalSource, /\(target as HTMLElement\)\.isContentEditable/)
+  assert.match(terminalSource, /items\[i\]\.type\.startsWith\('image\/'\)/)
+  assert.match(terminalSource, /uploadFileRef\.current\(file\)/)
 })
 
 test('terminal copy sheet uses selectable static text instead of textarea', () => {
@@ -271,7 +282,9 @@ test('history mode exposes selection-aware floating copy action', () => {
   assert.match(terminalSource, /const \[historySelection, setHistorySelection\]/)
   assert.match(terminalSource, /document\.addEventListener\('selectionchange', updateSelection\)/)
   assert.match(terminalSource, /selectionInsideElement\(scrollbackContentRef\.current\)/)
-  assert.match(terminalSource, /if \(selectionInsideElement\(scrollbackContentRef\.current\)\) return/)
+  assert.match(terminalSource, /const hasSelection = selectionInsideElement\(scrollbackContentRef\.current\) !== null/)
+  assert.match(terminalSource, /const shouldClose = shouldCloseScrollbackOnScroll\(\{[\s\S]*hasSelection,[\s\S]*\}\)/)
+  assert.match(terminalSource, /scrollbackLastScrollTopRef\.current = el\.scrollTop/)
   assert.match(terminalSource, /ref=\{scrollbackContentRef\}/)
   assert.match(terminalSource, /historySelection && \(/)
   assert.match(terminalSource, /handleCopyHistorySelection\(\)/)

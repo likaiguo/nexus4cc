@@ -327,14 +327,32 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     if (key.action === 'scrollToBottom') {
       scrollToBottom()
     } else if (key.action === 'pasteClipboard') {
-      // Text paste is an app-level action. Image/file upload stays behind
-      // explicit upload controls instead of hiding behind paste.
       pasteInitialRef.current = ''
       if (navigator.clipboard) {
+        let handled = false
+        try {
+          const items = await navigator.clipboard.read()
+          for (const item of items) {
+            const imgType = item.types.find(t => t.startsWith('image/'))
+            if (imgType && onUploadFile) {
+              const blob = await item.getType(imgType)
+              onUploadFile(new File([blob], `paste.${imgType.split('/')[1] ?? 'png'}`, { type: imgType }))
+              handled = true
+              break
+            }
+          }
+        } catch (error) {
+          if (!(error instanceof Error)) throw error
+          handled = false
+        }
+        if (handled) return
         try {
           const text = await navigator.clipboard.readText()
           if (text) pasteInitialRef.current = text
-        } catch {}
+        } catch (error) {
+          if (!(error instanceof Error)) throw error
+          pasteInitialRef.current = ''
+        }
       }
       setShowPasteBox(true)
     } else if (key.action === 'openTerminalHistory') {
@@ -726,14 +744,13 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
     )
   }
 
-  // ---- Text paste sheet ----
   const pasteBoxEl = showPasteBox && createPortal(
     <>
       <div className="fixed inset-0 z-[700]" onClick={() => setShowPasteBox(false)} />
       <div className="fixed bottom-0 left-0 right-0 z-[701] bg-nexus-bg border-t border-nexus-border rounded-t-xl p-3.5 pb-6 shadow-[0_-4px_24px_rgba(0,0,0,0.35)]"
         onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
-          <span className="text-nexus-text text-sm font-semibold">{t('toolbar.pasteText')}</span>
+          <span className="text-nexus-text text-sm font-semibold">{t('toolbar.pasteUpload')}</span>
           <button onPointerDown={(e) => { e.preventDefault(); setShowPasteBox(false) }}
             className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex">
             <Icon name="x" size={20} />
@@ -742,8 +759,21 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         <textarea
           ref={pasteBoxRef}
           rows={3}
-          placeholder={t('toolbar.pasteTextPlaceholder')}
+          placeholder={t('toolbar.pastePlaceholder')}
           className="w-full box-border bg-nexus-bg-2 border border-nexus-border rounded-lg text-nexus-text text-sm p-2.5 resize-none outline-none font-inherit block"
+          onPaste={(e) => {
+            const items = e.clipboardData?.items
+            if (items) {
+              for (let i = 0; i < items.length; i++) {
+                if (items[i].type.startsWith('image/') && onUploadFile) {
+                  e.preventDefault()
+                  const file = items[i].getAsFile()
+                  if (file) { onUploadFile(file); setShowPasteBox(false) }
+                  return
+                }
+              }
+            }
+          }}
         />
         <button
           className="w-full mt-2 py-2.5 rounded-lg bg-nexus-accent text-white text-sm font-medium cursor-pointer border-none"
@@ -754,6 +784,22 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         >
           {t('toolbar.sendText')}
         </button>
+        <label className="flex items-center justify-center gap-2 mt-2.5 p-2.5 rounded-lg cursor-pointer bg-nexus-bg-2 border border-nexus-border text-nexus-text-2 text-[13px]">
+          <Icon name="paperclip" size={16} />{t('toolbar.selectFile')}
+          <input ref={pasteFileRef} type="file" accept="*/*" className="hidden"
+            onChange={(e) => {
+              const files = e.target.files
+              if (!files || files.length === 0) { e.target.value = ''; return }
+              if (onUploadFiles) {
+                onUploadFiles(files)
+              } else if (onUploadFile) {
+                for (const file of files) onUploadFile(file)
+              }
+              setShowPasteBox(false)
+              e.target.value = ''
+            }}
+          />
+        </label>
       </div>
     </>,
     document.body
