@@ -125,6 +125,22 @@
     "presets": "Presets",
       "recommendations": "Frequent"
     },
+    "quickPhrases": {
+      "title": "Quick phrases",
+      "subtitle": "Send saved phrases to the active terminal",
+      "add": "Add phrase",
+      "create": "Create phrase",
+      "empty": "No quick phrases yet",
+      "required": "Title and text are required",
+      "titlePlaceholder": "Title",
+      "textPlaceholder": "Phrase text",
+      "appendEnter": "Append Enter when sending",
+      "enterOn": "Enter",
+      "enterOff": "No Enter",
+      "usage": "{{count}} uses",
+      "moveUp": "Move up",
+      "moveDown": "Move down"
+    },
     "toolbarPresets": {
     "factory": "Factory",
     "claude": "Claude frequent",

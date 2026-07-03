@@ -257,6 +257,7 @@ const FilePanel = lazy(() => import('./FilePanel'))
 const WorkspaceBrowser = lazy(() => import('./WorkspaceBrowser'))
 const GeneralSettings = lazy(() => import('./GeneralSettings'))
 const AttentionCenter = lazy(() => import('./AttentionCenter'))
+const QuickPhrasesPanel = lazy(() => import('./QuickPhrasesPanel'))
 
 interface TmuxWindow {
   index: number
@@ -436,6 +437,7 @@ export default function Terminal({ token }: Props) {
   const [showGeneralSettings, setShowGeneralSettings] = useState(false)
   const [showSessionManagerV2, setShowSessionManagerV2] = useState(false)
   const [showAttentionCenter, setShowAttentionCenter] = useState(false)
+  const [showQuickPhrases, setShowQuickPhrases] = useState(false)
   const [attentionCount, setAttentionCount] = useState(0)
   const [showNewSession, setShowNewSession] = useState(false)
   const [showNewWindow, setShowNewWindow] = useState(false)
@@ -867,6 +869,12 @@ export default function Terminal({ token }: Props) {
       wsRef.current.send(data)
     }
   }, [])
+
+  const handleQuickPhraseSend = useCallback((phrase: { text: string; appendEnter: boolean }) => {
+    const text = phrase.text || ''
+    if (!text) return
+    sendToWs(text + (phrase.appendEnter ? '\r' : ''))
+  }, [sendToWs])
 
   useEffect(() => {
     composerModeRef.current = composerMode
@@ -2369,7 +2377,7 @@ export default function Terminal({ token }: Props) {
 
   // Overlay guard: when any overlay opens, set xterm textarea to readOnly
   // to prevent virtual keyboard from appearing when keyboard dismisses
-  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showAttentionCenter || showFiles
+  const anyOverlayOpen = showSessionDrawer || showSettings || showGeneralSettings || showNewSession || showNewWindow || showScrollback || showSessionManagerV2 || showAttentionCenter || showQuickPhrases || showFiles
   useEffect(() => {
     if (isWidePC) return
     const ta = termRef.current?.textarea
@@ -2506,6 +2514,7 @@ export default function Terminal({ token }: Props) {
     onOpenSettings: () => setShowGeneralSettings(true),
     onOpenFiles: () => setShowFiles(true),
     onOpenWorkspace: () => openWorkspaceBrowser(),
+    onOpenQuickPhrases: () => setShowQuickPhrases(true),
     onOpenTerminalHistory: openTerminalHistory,
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
@@ -2661,6 +2670,15 @@ export default function Terminal({ token }: Props) {
                         title="文件列表"
                       >
                         <Icon name="folder" size={18} />
+                      </button>
+
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setShowQuickPhrases(true); }}
+                        className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
+                        title={t('quickPhrases.title')}
+                        aria-label={t('quickPhrases.title')}
+                      >
+                        <Icon name="message" size={18} />
                       </button>
 
                       <button
@@ -3143,6 +3161,15 @@ export default function Terminal({ token }: Props) {
               onClose={() => { setShowAttentionCenter(false); fetchAttentionCount() }}
               onJump={handleAttentionJump}
               onChanged={fetchAttentionCount}
+            />
+          </Suspense>
+        )}
+        {showQuickPhrases && (
+          <Suspense fallback={null}>
+            <QuickPhrasesPanel
+              token={token}
+              onClose={() => setShowQuickPhrases(false)}
+              onSend={handleQuickPhraseSend}
             />
           </Suspense>
         )}
