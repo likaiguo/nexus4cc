@@ -94,10 +94,16 @@
     "profile": "Profile",
     "profileDefault": "Default"
   },
-  "toolbar": {
+    "toolbar": {
     "pasteUpload": "Paste / Upload",
     "pastePlaceholder": "Long-press to paste text or image...",
+    "pasteText": "Paste text",
+    "pasteTextPlaceholder": "Paste text, edit it, then send...",
+    "sendText": "Send text",
+    "uploadFiles": "Upload files",
     "selectFile": "Select File",
+    "terminalHistory": "Terminal history",
+    "historyReturnHint": "Scroll to bottom to return",
     "shortcuts": "Shortcuts",
     "editShortcuts": "Edit shortcuts",
     "expand": "Expand",
@@ -127,9 +133,9 @@
     "saveAsDefault": "Save as Default",
     "done": "Done",
     "presets": "Presets",
-    "recommendations": "Frequent"
-  },
-  "toolbarPresets": {
+      "recommendations": "Frequent"
+    },
+    "toolbarPresets": {
     "factory": "Factory",
     "claude": "Claude frequent",
     "shell": "Shell frequent",
@@ -151,7 +157,8 @@
     "clear": "Clear draft",
     "send": "Send draft",
     "placeholder": "Type, edit, then send...",
-    "noHistory": "No input history"
+    "noHistory": "No input history",
+    "multilineHint": "Enter sends, Shift+Enter adds a line, Ctrl/Cmd+Enter sends"
   },
   "attention": {
     "title": "Attention Center",
@@ -206,6 +213,9 @@
     "filePathComplete": "File path complete",
     "backslash": "Backslash",
     "pasteClipboard": "Paste clipboard",
+    "literalNext": "Terminal Ctrl+V (literal next)",
+    "pasteText": "Paste text (edit then send)",
+    "terminalHistory": "Open terminal history",
     "togglePermission": "Toggle permission mode",
     "scrollBottom": "Scroll to bottom",
     "copyTerminal": "Copy terminal content",

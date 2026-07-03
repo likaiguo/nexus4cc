@@ -477,6 +477,7 @@ export default function Terminal({ token }: Props) {
   const triggerScrollbackRef = useRef<() => void>(() => {})
   const scrollbackPrefetchRef = useRef<Promise<{ content: string }> | null>(null)
   const scrollbackCacheRef = useRef<string | null>(null)
+  const scrollbackRestoreRef = useRef<{ composer: boolean; keyboardVisible: boolean } | null>(null)
   const pausePollingRef = useRef(false)
   const activeWindowIndexRef = useRef(activeWindowIndex)
   const windowsInitializedRef = useRef(false)
@@ -484,7 +485,6 @@ export default function Terminal({ token }: Props) {
   const [windowsLoaded, setWindowsLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pasteFileRef = useRef<HTMLInputElement>(null)
-  const uploadFileRef = useRef<(file: File) => Promise<void>>(null!)
   // Upload queue: multi-file concurrent upload with progress
   type UploadStatus = 'pending' | 'uploading' | 'done' | 'error' | 'conflict'
   interface UploadItem {
@@ -1102,10 +1102,13 @@ export default function Terminal({ token }: Props) {
 
   function handleComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (composerImeRef.current || e.nativeEvent.isComposing) return
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault()
-      handleComposerSend()
+    if (e.key !== 'Enter') return
+    if (e.shiftKey) {
+      updateComposerSelection()
+      return
     }
+    e.preventDefault()
+    handleComposerSend()
   }
 
   useEffect(() => {
@@ -1134,7 +1137,6 @@ export default function Terminal({ token }: Props) {
   }, [focusComposerTextareaSoon, token])
 
   useEffect(() => {
-    if (isWidePC) return
     const scope = { project: activeTmuxSession, channelIndex: activeWindowIndex }
     const previousScope = composerScopeRef.current
     if (previousScope && composerDraftLoadedRef.current && composerDraftDirtyRef.current) {
@@ -1175,10 +1177,9 @@ export default function Terminal({ token }: Props) {
         if (!cancelled) setComposerDraftLoaded(true)
       })
     return () => { cancelled = true }
-  }, [activeTmuxSession, activeWindowIndex, isWidePC, saveComposerDraftNow, token])
+  }, [activeTmuxSession, activeWindowIndex, saveComposerDraftNow, token])
 
   useEffect(() => {
-    if (isWidePC) return
     if (!composerDraftLoaded || !composerDraftDirty) return
     const scope = composerScopeRef.current
     if (!scope) return
@@ -1193,7 +1194,7 @@ export default function Terminal({ token }: Props) {
         composerSaveTimerRef.current = null
       }
     }
-  }, [composerDraft, composerCursor, composerDraftDirty, composerDraftLoaded, isWidePC, saveComposerDraftNow])
+  }, [composerDraft, composerCursor, composerDraftDirty, composerDraftLoaded, saveComposerDraftNow])
 
   useEffect(() => {
     if (!showComposerHistory) return
@@ -1201,7 +1202,9 @@ export default function Terminal({ token }: Props) {
   }, [showComposerHistory, activeTmuxSession, activeWindowIndex, loadComposerHistory])
 
   const hasComposerDraft = composerDraft.length > 0
-  const showMobileComposerPanel = !isWidePC && composerMode === 'composer'
+  const showComposerPanel = composerMode === 'composer'
+  const showMobileComposerPanel = !isWidePC && showComposerPanel
+  const showDesktopComposerPanel = isWidePC && showComposerPanel
 
   useEffect(() => {
     if (isWidePC) {
@@ -1220,6 +1223,19 @@ export default function Terminal({ token }: Props) {
     update()
     return () => ro.disconnect()
   }, [isWidePC, showMobileComposerPanel, composerDraft, showComposerHistory])
+
+  useEffect(() => {
+    if (!isWidePC) return
+    if (!showDesktopComposerPanel) return
+    const el = composerWrapRef.current
+    if (!el) return
+    const textarea = composerTextareaRef.current
+    if (!textarea) return
+    const cursor = Math.max(0, Math.min(composerCursorRef.current, textarea.value.length))
+    textarea.selectionStart = cursor
+    textarea.selectionEnd = cursor
+    textarea.focus()
+  }, [isWidePC, showDesktopComposerPanel])
 
   // 动态页面标题：反映当前窗口和 Agent 状态
   useEffect(() => {
@@ -1726,29 +1742,7 @@ export default function Terminal({ token }: Props) {
   }
 
   // Keep refs current on every render
-  uploadFileRef.current = uploadFile
   activeWindowIndexRef.current = activeWindowIndex
-
-  // 全局剪贴板粘贴：图片直接上传（F-14）
-  useEffect(() => {
-    function handlePaste(e: ClipboardEvent) {
-      const target = e.target as HTMLElement
-      // 不拦截文本输入框里的粘贴
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
-      const items = e.clipboardData?.items
-      if (!items) return
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/')) {
-          e.preventDefault()
-          const file = items[i].getAsFile()
-          if (file) uploadFileRef.current(file)
-          return
-        }
-      }
-    }
-    document.addEventListener('paste', handlePaste)
-    return () => document.removeEventListener('paste', handlePaste)
-  }, [])
 
   // Effect A: create xterm instance + DOM attachment + touch/resize events (once per token)
   useEffect(() => {
@@ -1892,7 +1886,7 @@ export default function Terminal({ token }: Props) {
         // Ctrl+字母
         seq = String.fromCharCode(e.key.toLowerCase().charCodeAt(0) - 96)
       } else if (e.key === 'Enter') {
-        seq = '\r'
+        seq = e.shiftKey ? '\n' : '\r'
       } else if (e.key === 'Tab') {
         seq = '\t'
       } else if (e.key === 'Backspace') {
@@ -2013,10 +2007,10 @@ export default function Terminal({ token }: Props) {
         if (swipeAxis === 'vertical' && !showScrollbackRef.current) {
           e.preventDefault()
           const y = e.touches[0].clientY
-          const deltaY = touchLastY - y  // positive = finger UP = want older content
+          const deltaY = touchLastY - y  // positive = finger UP = want older output
           touchLastY = y
-          if (deltaY < 0) {  // finger DOWN = swipe down = view history
-            swipeUpAccumRef.current += -deltaY
+          if (deltaY > 0) {
+            swipeUpAccumRef.current += deltaY
             if (swipeUpAccumRef.current > 10 && !scrollbackPrefetchRef.current && scrollbackCacheRef.current === null) {
               // Pre-fetch while gesture is still building up
               const wi = activeWindowIndexRef.current
@@ -2497,6 +2491,28 @@ export default function Terminal({ token }: Props) {
     setHistorySelection(null)
     scrollbackCacheRef.current = null
     scrollbackPrefetchRef.current = null
+    const restore = scrollbackRestoreRef.current
+    scrollbackRestoreRef.current = null
+    requestAnimationFrame(() => {
+      if (restore?.composer && composerModeRef.current === 'composer') {
+        composerTextareaRef.current?.focus()
+        return
+      }
+      if (!isWidePC && restore?.keyboardVisible) {
+        keyboardVisibleRef.current = true
+        const xtermTa = termRef.current?.textarea
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+        if (isIOS) {
+          if (xtermTa) xtermTa.inputMode = 'none'
+          if (inputRef.current) { inputRef.current.inputMode = 'text'; inputRef.current.focus() }
+        } else if (xtermTa) {
+          xtermTa.inputMode = 'text'
+          xtermTa.focus()
+        }
+        return
+      }
+      if (isWidePC) termRef.current?.focus()
+    })
   }
 
   function handleOverlayScroll(e: React.UIEvent<HTMLDivElement>) {
@@ -2511,6 +2527,7 @@ export default function Terminal({ token }: Props) {
   function fetchScrollback() {
     if (showScrollbackRef.current) return // already showing
     showScrollbackRef.current = true
+    scrollbackRestoreRef.current = { composer: composerModeRef.current === 'composer', keyboardVisible: keyboardVisibleRef.current }
     swipeUpAccumRef.current = 0
     setHistorySelection(null)
     setShowScrollback(true)
@@ -2541,6 +2558,10 @@ export default function Terminal({ token }: Props) {
         setScrollbackLoading(false)
       })
   }
+
+  const openTerminalHistory = useCallback(() => {
+    triggerScrollbackRef.current()
+  }, [])
 
   useEffect(() => {
     if (scrollbackContent && scrollbackOverlayRef.current) {
@@ -2584,11 +2605,12 @@ export default function Terminal({ token }: Props) {
     onOpenSettings: () => setShowGeneralSettings(true),
     onOpenFiles: () => setShowFiles(true),
     onOpenWorkspace: () => openWorkspaceBrowser(),
+    onOpenTerminalHistory: openTerminalHistory,
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
     onUploadFiles: enqueueFiles,
     onShowCopySheet: (text: string) => setCopySheetText(text),
-    composerControls: !isWidePC ? {
+    composerControls: {
       active: composerMode === 'composer',
       hasDraft: hasComposerDraft,
       appendEnter: composerAppendEnter,
@@ -2598,7 +2620,7 @@ export default function Terminal({ token }: Props) {
       onToggleAppendEnter: toggleComposerAppendEnter,
       onToggleHistory: handleComposerHistoryToggle,
       onClear: handleComposerClear,
-    } : undefined,
+    },
     attentionEntry: !isWidePC ? {
       count: attentionCount,
       onOpen: () => setShowAttentionCenter(true),
@@ -2737,7 +2759,6 @@ export default function Terminal({ token }: Props) {
                     >
                       <Icon name="plus" size={18} />
                     </button>
-
 
                     <button
                       onClick={(e) => { e.stopPropagation(); setShowFiles(true); }}
@@ -2886,6 +2907,109 @@ export default function Terminal({ token }: Props) {
               {isScrolledUp && (
                 <button className="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-nexus-accent border-none text-white text-lg cursor-pointer z-50 flex items-center justify-center shadow-lg backdrop-blur-sm" onClick={scrollToBottom} title="滚到底部"><Icon name="arrowDown" size={16} /></button>
               )}
+              {showDesktopComposerPanel && (
+                <div ref={composerWrapRef} className="shrink-0 bg-nexus-menu-bg border-t border-nexus-border">
+                  <div className="flex items-center gap-2 px-3 py-2">
+                    <div className="min-w-0 flex-1 flex items-center gap-2">
+                      <Icon name="edit" size={15} className="text-nexus-accent shrink-0" />
+                      <span className="text-xs font-medium text-nexus-text truncate">{t('composer.title')}</span>
+                      <span className="text-[11px] text-nexus-text-2 font-mono shrink-0">
+                        L{composerCursorMeta.line}:C{composerCursorMeta.column}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="h-8 px-2.5 rounded-md bg-transparent border border-nexus-border text-nexus-text-2 text-xs cursor-pointer flex items-center gap-1.5 shrink-0"
+                      onPointerDown={(e) => { e.preventDefault(); handleComposerHistoryToggle() }}
+                      title={showComposerHistory ? t('composer.hideHistory') : t('composer.history')}
+                      aria-label={showComposerHistory ? t('composer.hideHistory') : t('composer.history')}
+                    >
+                      <Icon name="history" size={14} />
+                      <span>{t('composer.history')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="h-8 w-8 rounded-md bg-transparent border border-nexus-border text-nexus-text-2 cursor-pointer flex items-center justify-center shrink-0"
+                      onPointerDown={(e) => { e.preventDefault(); closeComposer() }}
+                      title={t('composer.close')}
+                      aria-label={t('composer.close')}
+                    >
+                      <Icon name="arrowDown" size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="h-8 px-3 rounded-md bg-nexus-accent border-none text-white text-xs cursor-pointer flex items-center gap-1.5 shrink-0 disabled:opacity-40"
+                      onPointerDown={(e) => { e.preventDefault(); handleComposerSend() }}
+                      disabled={!composerDraft.trim()}
+                      title={t('composer.send')}
+                      aria-label={t('composer.send')}
+                    >
+                      <Icon name="play" size={14} />
+                      <span>{t('composer.send')}</span>
+                    </button>
+                  </div>
+                  <div className="px-3 pb-3 flex flex-col gap-2">
+                    <textarea
+                      ref={composerTextareaRef}
+                      value={composerDraft}
+                      rows={3}
+                      placeholder={t('composer.placeholder')}
+                      className="w-full max-h-[24vh] min-h-[76px] resize-y bg-nexus-bg border border-nexus-border rounded-md text-nexus-text text-sm leading-5 font-mono px-3 py-2 outline-none focus:border-nexus-accent"
+                      style={{ WebkitUserSelect: 'text', userSelect: 'text' }}
+                      onChange={handleComposerChange}
+                      onKeyDown={handleComposerKeyDown}
+                      onSelect={updateComposerSelection}
+                      onClick={updateComposerSelection}
+                      onKeyUp={updateComposerSelection}
+                      onCompositionStart={() => { composerImeRef.current = true }}
+                      onCompositionEnd={(e) => {
+                        composerImeRef.current = false
+                        setComposerCursor(e.currentTarget.selectionStart ?? e.currentTarget.value.length)
+                        setComposerDraftDirty(true)
+                      }}
+                    />
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-nexus-text-2">
+                      <span>{t('composer.multilineHint')}</span>
+                      <button
+                        type="button"
+                        className={`bg-transparent border-none text-[11px] cursor-pointer ${hasComposerDraft ? 'text-nexus-text-2' : 'text-nexus-muted'}`}
+                        onPointerDown={(e) => {
+                          e.preventDefault()
+                          if (hasComposerDraft) handleComposerClear()
+                        }}
+                      >
+                        {t('composer.clear')}
+                      </button>
+                    </div>
+                    {showComposerHistory && (
+                      <div className="max-h-[22vh] overflow-y-auto rounded-md border border-nexus-border bg-nexus-bg">
+                        {composerHistoryLoading ? (
+                          <div className="px-3 py-3 text-xs text-nexus-text-2">{t('common.loading')}</div>
+                        ) : composerHistory.length === 0 ? (
+                          <div className="px-3 py-3 text-xs text-nexus-text-2">{t('composer.noHistory')}</div>
+                        ) : (
+                          composerHistory.map(item => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className="w-full text-left bg-transparent border-none border-b border-nexus-border last:border-b-0 px-3 py-2 cursor-pointer"
+                              onPointerDown={(e) => { e.preventDefault(); applyComposerHistory(item) }}
+                            >
+                              <div className="flex items-center gap-2 text-[11px] text-nexus-text-2 mb-1">
+                                <span className="truncate font-mono">{item.project || '~'}:{item.channelIndex}</span>
+                                <span className="shrink-0">{new Date(item.usedAt || item.createdAt).toLocaleString()}</span>
+                              </div>
+                              <div className="text-sm text-nexus-text font-mono whitespace-pre-wrap break-words max-h-[3.9rem] overflow-hidden">
+                                {item.text}
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2964,6 +3088,15 @@ export default function Terminal({ token }: Props) {
                 <button
                   type="button"
                   className="h-8 w-8 rounded-md bg-transparent border border-nexus-border text-nexus-text-2 cursor-pointer flex items-center justify-center shrink-0"
+                  onPointerDown={(e) => { e.preventDefault(); handleComposerHistoryToggle() }}
+                  title={showComposerHistory ? t('composer.hideHistory') : t('composer.history')}
+                  aria-label={showComposerHistory ? t('composer.hideHistory') : t('composer.history')}
+                >
+                  <Icon name="history" size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="h-8 w-8 rounded-md bg-transparent border border-nexus-border text-nexus-text-2 cursor-pointer flex items-center justify-center shrink-0"
                   onPointerDown={(e) => { e.preventDefault(); closeComposer() }}
                   title={t('composer.close')}
                   aria-label={t('composer.close')}
@@ -3001,6 +3134,19 @@ export default function Terminal({ token }: Props) {
                     setComposerDraftDirty(true)
                   }}
                 />
+                <div className="flex items-center justify-between gap-2 text-[11px] text-nexus-text-2">
+                  <span>{t('composer.multilineHint')}</span>
+                  <button
+                    type="button"
+                    className={`bg-transparent border-none text-[11px] cursor-pointer ${hasComposerDraft ? 'text-nexus-text-2' : 'text-nexus-muted'}`}
+                    onPointerDown={(e) => {
+                      e.preventDefault()
+                      if (hasComposerDraft) handleComposerClear()
+                    }}
+                  >
+                    {t('composer.clear')}
+                  </button>
+                </div>
                 {showComposerHistory && (
                   <div className="max-h-[24dvh] overflow-y-auto rounded-md border border-nexus-border bg-nexus-bg">
                     {composerHistoryLoading ? (
@@ -3161,17 +3307,17 @@ export default function Terminal({ token }: Props) {
           />
         </Suspense>
       )}
-      {showAttentionCenter && (
-        <Suspense fallback={null}>
-          <AttentionCenter
-            token={token}
-            onClose={() => { setShowAttentionCenter(false); fetchAttentionCount() }}
-            onJump={handleAttentionJump}
-            onChanged={fetchAttentionCount}
-          />
-        </Suspense>
-      )}
-      {copySheetText !== null && (
+        {showAttentionCenter && (
+          <Suspense fallback={null}>
+            <AttentionCenter
+              token={token}
+              onClose={() => { setShowAttentionCenter(false); fetchAttentionCount() }}
+              onJump={handleAttentionJump}
+              onChanged={fetchAttentionCount}
+            />
+          </Suspense>
+        )}
+        {copySheetText !== null && (
         <div
           className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/40"
           onClick={() => { setCopySheetText(null); setCopySheetCopied(false) }}
@@ -3331,8 +3477,8 @@ export default function Terminal({ token }: Props) {
           <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : mobileBottomInset }}>
             <GhostShield />
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b flex-shrink-0" style={{ borderColor: `${termMuted}44` }}>
-              <span className="font-semibold text-sm" style={{ color: termFg }}>历史记录</span>
-              <span className="text-xs flex-1 text-center" style={{ color: termMuted }}>滚到底部返回终端</span>
+              <span className="font-semibold text-sm" style={{ color: termFg }}>{t('toolbar.terminalHistory')}</span>
+              <span className="text-xs flex-1 text-center" style={{ color: termMuted }}>{t('toolbar.historyReturnHint')}</span>
               <button
                 className="bg-transparent border-none cursor-pointer p-1 flex items-center justify-center"
                 style={{ color: termMuted }}
@@ -3346,7 +3492,7 @@ export default function Terminal({ token }: Props) {
               style={{ WebkitOverflowScrolling: 'touch' }}
             >
               {scrollbackLoading ? (
-                <div className="text-center p-8" style={{ color: termMuted, fontFamily: termFontFamily, fontSize: termFontSize }}>加载中...</div>
+                <div className="text-center p-8" style={{ color: termMuted, fontFamily: termFontFamily, fontSize: termFontSize }}>{t('common.loading')}</div>
               ) : (
                 <pre
                   ref={scrollbackContentRef}

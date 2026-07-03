@@ -94,10 +94,16 @@
     "profile": "Profile",
     "profileDefault": "默认"
   },
-  "toolbar": {
+    "toolbar": {
     "pasteUpload": "粘贴 / 上传",
     "pastePlaceholder": "长按此处粘贴文本或图片…",
+    "pasteText": "粘贴文本",
+    "pasteTextPlaceholder": "粘贴文本后可编辑再发送…",
+    "sendText": "发送文本",
+    "uploadFiles": "上传文件",
     "selectFile": "选择文件",
+    "terminalHistory": "终端历史",
+    "historyReturnHint": "滚到底部返回终端",
     "shortcuts": "快捷键",
     "editShortcuts": "编辑快捷键",
     "expand": "展开",
@@ -127,9 +133,9 @@
     "saveAsDefault": "存为默认",
     "done": "完成",
     "presets": "一键预设",
-    "recommendations": "高频推荐"
-  },
-  "toolbarPresets": {
+      "recommendations": "高频推荐"
+    },
+    "toolbarPresets": {
     "factory": "出厂",
     "claude": "Claude 常用",
     "shell": "Shell 常用",
@@ -151,7 +157,8 @@
     "clear": "清空草稿",
     "send": "发送草稿",
     "placeholder": "输入后确认发送…",
-    "noHistory": "暂无输入历史"
+    "noHistory": "暂无输入历史",
+    "multilineHint": "Enter 发送，Shift+Enter 换行，Ctrl/Cmd+Enter 发送"
   },
   "attention": {
     "title": "待处理中心",
@@ -206,6 +213,9 @@
     "filePathComplete": "文件路径补全",
     "backslash": "反斜杠",
     "pasteClipboard": "粘贴剪贴板",
+    "literalNext": "终端 Ctrl+V（插入字面量）",
+    "pasteText": "粘贴文本（编辑后发送）",
+    "terminalHistory": "打开终端历史",
     "togglePermission": "切换权限模式",
     "scrollBottom": "滚动到底部",
     "copyTerminal": "复制终端内容",
