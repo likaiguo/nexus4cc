@@ -320,6 +320,79 @@ app.delete('/api/composer-drafts', authMiddleware, (req, res) => {
   }
 })
 
+// GET /api/quick-phrases — 查询全局常用语
+app.get('/api/quick-phrases', authMiddleware, (_req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    res.json(nexusStore.listQuickPhrases())
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/quick-phrases — 新增全局常用语
+app.post('/api/quick-phrases', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const phrase = nexusStore.createQuickPhrase({
+      title: req.body?.title,
+      text: req.body?.text,
+      appendEnter: req.body?.appendEnter ?? req.body?.append_enter ?? true,
+    })
+    res.status(201).json({ ok: true, phrase })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// PUT /api/quick-phrases/order — 保存全局常用语顺序
+app.put('/api/quick-phrases/order', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const order = req.body?.order ?? req.body?.ids ?? []
+    const phrases = nexusStore.reorderQuickPhrases(order)
+    res.json({ ok: true, phrases })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// PATCH /api/quick-phrases/:id — 更新全局常用语
+app.patch('/api/quick-phrases/:id', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const phrase = nexusStore.updateQuickPhrase(req.params.id, req.body || {})
+    if (!phrase) return res.status(404).json({ error: 'quick phrase not found' })
+    res.json({ ok: true, phrase })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// DELETE /api/quick-phrases/:id — 删除全局常用语
+app.delete('/api/quick-phrases/:id', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const deleted = nexusStore.deleteQuickPhrase(req.params.id)
+    if (deleted === 0) return res.status(404).json({ error: 'quick phrase not found' })
+    res.json({ ok: true, deleted })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// POST /api/quick-phrases/:id/use — 记录常用语使用统计（不写入输入历史）
+app.post('/api/quick-phrases/:id/use', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  try {
+    const phrase = nexusStore.markQuickPhraseUsed(req.params.id)
+    if (!phrase) return res.status(404).json({ error: 'quick phrase not found' })
+    res.json({ ok: true, phrase })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
 // GET /api/attention-events — 查询未处理/全部注意力事件
 app.get('/api/attention-events', authMiddleware, (req, res) => {
   if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })

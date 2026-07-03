@@ -9,6 +9,8 @@ const VALID_DEVICE_TYPES = new Set(['legacy', 'mobile', 'desktop'])
 const VALID_KEY_ACTIONS = new Set(['scrollToBottom', 'pasteClipboard', 'copyTerminal', 'fit'])
 const MAX_INPUT_HISTORY_TEXT = 10000
 const MAX_DRAFT_TEXT = 20000
+const MAX_QUICK_PHRASE_TITLE = 120
+const MAX_QUICK_PHRASE_TEXT = 10000
 const MAX_ATTENTION_SUMMARY = 500
 const VALID_ATTENTION_STATUS = new Set(['new', 'seen', 'resolved', 'dismissed'])
 const VALID_ATTENTION_TYPES = new Set(['needs-confirm', 'done', 'task-success', 'task-error'])
@@ -185,6 +187,27 @@ function normalizeToolbarConfig(config) {
   return normalized
 }
 
+function normalizeQuickPhraseId(id) {
+  return String(id || '').trim()
+}
+
+function normalizeQuickPhraseTitle(title) {
+  const value = String(title || '').replace(/\s+/g, ' ').trim().slice(0, MAX_QUICK_PHRASE_TITLE)
+  if (!value) throw new Error('quick phrase title required')
+  return value
+}
+
+function normalizeQuickPhraseText(text) {
+  const value = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').slice(0, MAX_QUICK_PHRASE_TEXT)
+  if (!value.trim()) throw new Error('quick phrase text required')
+  return value
+}
+
+function normalizeQuickPhraseAppendEnter(value, fallback = true) {
+  if (value === undefined || value === null) return Boolean(fallback)
+  return Boolean(value)
+}
+
 function normalizeDeviceType(deviceType) {
   const value = String(deviceType || DEFAULT_DEVICE_TYPE).toLowerCase()
   return VALID_DEVICE_TYPES.has(value) ? value : DEFAULT_DEVICE_TYPE
@@ -287,6 +310,20 @@ export class NexusStore {
         cursor_pos INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS quick_phrases (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        text TEXT NOT NULL,
+        append_enter INTEGER NOT NULL DEFAULT 1,
+        position INTEGER NOT NULL,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_used_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_quick_phrases_position
+        ON quick_phrases(position, created_at);
 
       CREATE TABLE IF NOT EXISTS project_order (
         project TEXT PRIMARY KEY,
@@ -686,6 +723,119 @@ export class NexusStore {
   clearComposerDraft({ project = '', channelIndex = 0 }) {
     return this.db.prepare('DELETE FROM composer_drafts WHERE scope_key = ?')
       .run(draftScope(project, channelIndex)).changes
+  }
+
+  mapQuickPhraseRow(row) {
+    if (!row) return null
+    return {
+      id: row.id,
+      title: row.title,
+      text: row.text,
+      appendEnter: row.append_enter === 1,
+      position: row.position,
+      useCount: row.use_count ?? 0,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      lastUsedAt: row.last_used_at || null,
+    }
+  }
+
+  listQuickPhrases() {
+    return this.db.prepare(`
+      SELECT id, title, text, append_enter, position, use_count, created_at, updated_at, last_used_at
+      FROM quick_phrases
+      ORDER BY position ASC, created_at ASC
+    `).all().map(row => this.mapQuickPhraseRow(row))
+  }
+
+  getQuickPhrase(id = '') {
+    const phraseId = normalizeQuickPhraseId(id)
+    if (!phraseId) return null
+    return this.mapQuickPhraseRow(this.db.prepare(`
+      SELECT id, title, text, append_enter, position, use_count, created_at, updated_at, last_used_at
+      FROM quick_phrases
+      WHERE id = ?
+    `).get(phraseId))
+  }
+
+  nextQuickPhrasePosition() {
+    const row = this.db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS position FROM quick_phrases').get()
+    return row?.position ?? 0
+  }
+
+  createQuickPhrase({ title, text, appendEnter = true } = {}) {
+    const normalizedTitle = normalizeQuickPhraseTitle(title)
+    const normalizedText = normalizeQuickPhraseText(text)
+    const shouldAppendEnter = normalizeQuickPhraseAppendEnter(appendEnter, true)
+    const ts = nowIso()
+    const id = makeId('phrase')
+    const position = this.nextQuickPhrasePosition()
+    this.db.prepare(`
+      INSERT INTO quick_phrases (
+        id, title, text, append_enter, position, use_count, created_at, updated_at, last_used_at
+      )
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL)
+    `).run(id, normalizedTitle, normalizedText, shouldAppendEnter ? 1 : 0, position, ts, ts)
+    return this.getQuickPhrase(id)
+  }
+
+  updateQuickPhrase(id = '', patch = {}) {
+    const phraseId = normalizeQuickPhraseId(id)
+    if (!phraseId) throw new Error('quick phrase id required')
+    const existing = this.getQuickPhrase(phraseId)
+    if (!existing) return null
+    const title = Object.prototype.hasOwnProperty.call(patch, 'title')
+      ? normalizeQuickPhraseTitle(patch.title)
+      : existing.title
+    const text = Object.prototype.hasOwnProperty.call(patch, 'text')
+      ? normalizeQuickPhraseText(patch.text)
+      : existing.text
+    const appendEnter = Object.prototype.hasOwnProperty.call(patch, 'appendEnter') || Object.prototype.hasOwnProperty.call(patch, 'append_enter')
+      ? normalizeQuickPhraseAppendEnter(patch.appendEnter ?? patch.append_enter, existing.appendEnter)
+      : existing.appendEnter
+    const ts = nowIso()
+    this.db.prepare(`
+      UPDATE quick_phrases
+      SET title = ?, text = ?, append_enter = ?, updated_at = ?
+      WHERE id = ?
+    `).run(title, text, appendEnter ? 1 : 0, ts, phraseId)
+    return this.getQuickPhrase(phraseId)
+  }
+
+  deleteQuickPhrase(id = '') {
+    const phraseId = normalizeQuickPhraseId(id)
+    if (!phraseId) throw new Error('quick phrase id required')
+    const deleted = this.db.prepare('DELETE FROM quick_phrases WHERE id = ?').run(phraseId).changes
+    if (deleted > 0) this.reorderQuickPhrases(this.listQuickPhrases().map(phrase => phrase.id))
+    return deleted
+  }
+
+  reorderQuickPhrases(order = []) {
+    const existing = this.listQuickPhrases()
+    const liveIds = existing.map(phrase => phrase.id)
+    const submitted = normalizeOrderList(order, liveIds, normalizeQuickPhraseId)
+    const submittedSet = new Set(submitted)
+    const finalOrder = [...submitted, ...liveIds.filter(id => !submittedSet.has(id))]
+    const ts = nowIso()
+    const tx = this.db.transaction(() => {
+      const stmt = this.db.prepare('UPDATE quick_phrases SET position = ?, updated_at = ? WHERE id = ?')
+      finalOrder.forEach((id, index) => stmt.run(index, ts, id))
+    })
+    tx()
+    return this.listQuickPhrases()
+  }
+
+  markQuickPhraseUsed(id = '') {
+    const phraseId = normalizeQuickPhraseId(id)
+    if (!phraseId) throw new Error('quick phrase id required')
+    const ts = nowIso()
+    const changes = this.db.prepare(`
+      UPDATE quick_phrases
+      SET use_count = use_count + 1, last_used_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(ts, ts, phraseId).changes
+    if (changes === 0) return null
+    return this.getQuickPhrase(phraseId)
   }
 
   getProjectOrder() {

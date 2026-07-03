@@ -135,6 +135,22 @@
     "presets": "一键预设",
       "recommendations": "高频推荐"
     },
+    "quickPhrases": {
+      "title": "常用语",
+      "subtitle": "发送已保存句子到当前终端",
+      "add": "新增常用语",
+      "create": "创建常用语",
+      "empty": "暂无常用语",
+      "required": "标题和正文必填",
+      "titlePlaceholder": "标题",
+      "textPlaceholder": "常用语正文",
+      "appendEnter": "发送时追加 Enter",
+      "enterOn": "追加 Enter",
+      "enterOff": "不追加 Enter",
+      "usage": "使用 {{count}} 次",
+      "moveUp": "上移",
+      "moveDown": "下移"
+    },
     "toolbarPresets": {
     "factory": "出厂",
     "claude": "Claude 常用",

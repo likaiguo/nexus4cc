@@ -23,6 +23,7 @@ interface Props {
   onUploadFiles?: (files: FileList) => void
   onOpenFiles?: () => void
   onOpenWorkspace?: () => void
+  onOpenQuickPhrases?: () => void
   onFitTerminal?: () => void
   onOpenTerminalHistory?: () => void
   onShowCopySheet?: (text: string) => void
@@ -130,7 +131,7 @@ interface DragState {
 
 const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
-export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onFitTerminal, onOpenTerminalHistory, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
+export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenQuickPhrases, onFitTerminal, onOpenTerminalHistory, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [deviceType, setDeviceType] = useState<ToolbarDeviceType>(() => toolbarDeviceType(window.innerWidth))
@@ -856,6 +857,14 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         {/* Bottom actions: upload + settings */}
           <div className="flex items-center justify-between px-2 py-1.5 border-t border-nexus-border">
             <div className="flex items-center gap-0.5">
+              {onOpenQuickPhrases && (
+                <button
+                  className={iconBtnPCClass}
+                  onPointerDown={(e) => { e.preventDefault(); onOpenQuickPhrases() }}
+                  title={t('quickPhrases.title')}
+                  aria-label={t('quickPhrases.title')}
+                ><Icon name="message" size={18} /></button>
+              )}
               {onOpenWorkspace && (
                 <button
                   className={iconBtnPCClass}
@@ -948,6 +957,16 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
             })}
             </div>
             {/* 右侧按钮组 */}
+            {onOpenQuickPhrases && (
+              <button
+                className={iconBtnPCClass}
+                onPointerDown={(e) => { e.preventDefault(); onOpenQuickPhrases() }}
+                title={t('quickPhrases.title')}
+                aria-label={t('quickPhrases.title')}
+              >
+                <Icon name="message" size={18} />
+              </button>
+            )}
             {onOpenWorkspace && (
               <button className={iconBtnPCClass} onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace() }} title={t('toolbar.workspace')}>
                 <Icon name="folder" size={18} />
@@ -1072,6 +1091,16 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
       <div className="flex items-center gap-1 overflow-x-auto overflow-y-hidden px-1.5 py-[3px] min-h-[36px]">
         <div className="flex-1 min-w-0" />
           <div className="flex items-center gap-1 w-max flex-shrink-0">
+            {onOpenQuickPhrases && (
+              <button
+                className={iconBtnClass}
+                onPointerDown={(e) => { e.preventDefault(); onOpenQuickPhrases() }}
+                title={t('quickPhrases.title')}
+                aria-label={t('quickPhrases.title')}
+              >
+                <Icon name="message" size={18} />
+              </button>
+            )}
             {onOpenWorkspace && (
               <button
                 className={iconBtnClass}
@@ -1178,6 +1207,12 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
                       </button>
                       <div className="h-px bg-nexus-border my-1" />
                       </>
+                    )}
+                    {onOpenQuickPhrases && (
+                      <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenQuickPhrases(); setShowQuickMenu(false) }}>
+                        <Icon name="message" size={16} />
+                        <span>{t('quickPhrases.title')}</span>
+                      </button>
                     )}
                     {onOpenWorkspace && (
                       <button className={quickMenuItemClass} onPointerDown={(e) => { e.preventDefault(); onOpenWorkspace(); setShowQuickMenu(false) }}>
