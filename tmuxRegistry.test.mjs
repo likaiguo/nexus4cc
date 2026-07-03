@@ -96,5 +96,41 @@ test('tmux registry schema is idempotent across store reopen', () => {
   }
 })
 
+test('session archives persist metadata and transcript details', () => withStore(store => {
+  const archive = store.createSessionArchive({
+    project: 'proj',
+    channelIndex: 2,
+    windowName: 'codex',
+    cwd: '/work/proj',
+    launcher: 'codex',
+    profile: '',
+    status: 'closed',
+    capturedText: 'user prompt\nassistant answer',
+    startedAt: '2026-07-04T00:00:00.000Z',
+    closedAt: '2026-07-04T00:10:00.000Z',
+    metadata: { agentSessionId: '019f2602-1270-76f2-905a-a393432987fb' },
+  })
+
+  assert.match(archive.id, /^archive_/)
+  assert.equal(archive.project, 'proj')
+  assert.equal(archive.channelIndex, 2)
+  assert.equal(archive.windowName, 'codex')
+  assert.equal(archive.cwd, '/work/proj')
+  assert.equal(archive.launcher, 'codex')
+  assert.equal(archive.status, 'closed')
+  assert.equal(archive.transcriptSize, 'user prompt\nassistant answer'.length)
+  assert.equal(archive.metadata.agentSessionId, '019f2602-1270-76f2-905a-a393432987fb')
+
+  const archives = store.listSessionArchives({ project: 'proj' })
+  assert.equal(archives.length, 1)
+  assert.equal(archives[0].id, archive.id)
+  assert.equal(archives[0].capturedText, undefined)
+  assert.equal(archives[0].transcriptSize, 'user prompt\nassistant answer'.length)
+
+  const detail = store.getSessionArchive(archive.id)
+  assert.equal(detail.capturedText, 'user prompt\nassistant answer')
+  assert.equal(detail.closedAt, '2026-07-04T00:10:00.000Z')
+}))
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

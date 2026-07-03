@@ -141,6 +141,9 @@
       "moveUp": "Move up",
       "moveDown": "Move down"
     },
+    "sessionArchives": {
+      "title": "Session archives"
+    },
     "toolbarPresets": {
     "factory": "Factory",
     "claude": "Claude frequent",

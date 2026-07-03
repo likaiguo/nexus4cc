@@ -15,6 +15,7 @@ const MAX_ATTENTION_SUMMARY = 500
 const VALID_ATTENTION_STATUS = new Set(['new', 'seen', 'resolved', 'dismissed'])
 const VALID_ATTENTION_TYPES = new Set(['needs-confirm', 'done', 'task-success', 'task-error'])
 const VALID_TMUX_RECORD_STATUS = new Set(['active', 'closed'])
+const VALID_ARCHIVE_STATUS = new Set(['snapshot', 'closed'])
 export const DEFAULT_SETTINGS = Object.freeze({
   composerMode: 'direct',
   composerAppendEnter: true,
@@ -103,6 +104,11 @@ function normalizeLauncher(value, fallback = 'bash') {
 function normalizeRecordStatus(value, fallback = 'active') {
   const raw = String(value || '').trim().toLowerCase()
   return VALID_TMUX_RECORD_STATUS.has(raw) ? raw : fallback
+}
+
+function normalizeArchiveStatus(value, fallback = 'snapshot') {
+  const raw = String(value || '').trim().toLowerCase()
+  return VALID_ARCHIVE_STATUS.has(raw) ? raw : fallback
 }
 
 function normalizeOrderList(values, liveValues = null, normalize = value => String(value)) {
@@ -378,6 +384,29 @@ export class NexusStore {
       );
       CREATE INDEX IF NOT EXISTS idx_tmux_channels_status
         ON tmux_channels(status, project, channel_index);
+
+      CREATE TABLE IF NOT EXISTS agent_session_archives (
+        id TEXT PRIMARY KEY,
+        project TEXT NOT NULL DEFAULT '',
+        channel_index INTEGER NOT NULL DEFAULT 0,
+        window_name TEXT NOT NULL DEFAULT '',
+        cwd TEXT NOT NULL DEFAULT '',
+        launcher TEXT NOT NULL DEFAULT 'bash',
+        profile TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'snapshot',
+        captured_text TEXT NOT NULL DEFAULT '',
+        transcript_size INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        closed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        CHECK (status IN ('snapshot', 'closed'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_session_archives_project_created
+        ON agent_session_archives(project, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_session_archives_created
+        ON agent_session_archives(created_at DESC);
 
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -1215,6 +1244,100 @@ export class NexusStore {
     const ts = nowIso()
     return this.db.prepare('UPDATE tmux_channels SET restored_at = ?, updated_at = ? WHERE project = ? AND channel_index = ?')
       .run(ts, ts, projectName, normalizeChannelIndex(channelIndex)).changes
+  }
+
+  mapSessionArchiveRow(row, { includeText = false } = {}) {
+    if (!row) return null
+    const archive = {
+      id: row.id,
+      project: row.project || '',
+      channelIndex: row.channel_index,
+      windowName: row.window_name || '',
+      cwd: row.cwd || '',
+      launcher: row.launcher || 'bash',
+      profile: row.profile || '',
+      status: row.status || 'snapshot',
+      transcriptSize: row.transcript_size || 0,
+      startedAt: row.started_at || null,
+      closedAt: row.closed_at || null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      metadata: safeParseJson(row.metadata_json, {}),
+    }
+    if (includeText) archive.capturedText = row.captured_text || ''
+    return archive
+  }
+
+  createSessionArchive(archive = {}) {
+    const project = normalizeProjectName(archive.project)
+    if (!project) throw new Error('project required')
+    const capturedText = String(archive.capturedText ?? '')
+    const ts = nowIso()
+    const row = {
+      id: String(archive.id || makeId('archive')),
+      project,
+      channelIndex: normalizeChannelIndex(archive.channelIndex ?? archive.index),
+      windowName: String(archive.windowName ?? archive.name ?? ''),
+      cwd: String(archive.cwd ?? ''),
+      launcher: normalizeLauncher(archive.launcher, 'bash'),
+      profile: String(archive.profile ?? ''),
+      status: normalizeArchiveStatus(archive.status),
+      capturedText,
+      transcriptSize: capturedText.length,
+      startedAt: archive.startedAt ?? null,
+      closedAt: archive.closedAt ?? null,
+      createdAt: archive.createdAt ?? ts,
+      updatedAt: ts,
+      metadata: archive.metadata ?? {},
+    }
+    this.db.prepare(`
+      INSERT INTO agent_session_archives (
+        id, project, channel_index, window_name, cwd, launcher, profile, status,
+        captured_text, transcript_size, started_at, closed_at, created_at, updated_at, metadata_json
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      row.id,
+      row.project,
+      row.channelIndex,
+      row.windowName,
+      row.cwd,
+      row.launcher,
+      row.profile,
+      row.status,
+      row.capturedText,
+      row.transcriptSize,
+      row.startedAt,
+      row.closedAt,
+      row.createdAt,
+      row.updatedAt,
+      toJson(row.metadata, {}),
+    )
+    return this.getSessionArchive(row.id)
+  }
+
+  listSessionArchives({ project = '', limit = 100 } = {}) {
+    const cappedLimit = clampLimit(limit, 100, 500)
+    const projectName = normalizeProjectName(project)
+    const sql = `
+      SELECT id, project, channel_index, window_name, cwd, launcher, profile, status,
+        transcript_size, started_at, closed_at, created_at, updated_at, metadata_json
+      FROM agent_session_archives
+      ${projectName ? 'WHERE project = ?' : ''}
+      ORDER BY created_at DESC
+      LIMIT ?
+    `
+    const args = projectName ? [projectName, cappedLimit] : [cappedLimit]
+    return this.db.prepare(sql).all(...args).map(row => this.mapSessionArchiveRow(row))
+  }
+
+  getSessionArchive(id = '') {
+    const archiveId = String(id || '').trim()
+    if (!archiveId) return null
+    return this.mapSessionArchiveRow(
+      this.db.prepare('SELECT * FROM agent_session_archives WHERE id = ?').get(archiveId),
+      { includeText: true },
+    )
   }
 
   mapAttentionEventRow(row) {

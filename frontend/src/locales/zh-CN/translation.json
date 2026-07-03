@@ -141,6 +141,9 @@
       "moveUp": "上移",
       "moveDown": "下移"
     },
+    "sessionArchives": {
+      "title": "会话归档"
+    },
     "toolbarPresets": {
     "factory": "出厂",
     "claude": "Claude 常用",
