@@ -221,7 +221,7 @@
     "bashMode": "Bash 模式",
     "filePathComplete": "文件路径补全",
     "backslash": "反斜杠",
-    "pasteClipboard": "粘贴剪贴板",
+    "pasteClipboard": "粘贴 / 上传剪贴板",
     "literalNext": "终端 Ctrl+V（插入字面量）",
     "pasteText": "粘贴文本（编辑后发送）",
     "terminalHistory": "打开终端历史",

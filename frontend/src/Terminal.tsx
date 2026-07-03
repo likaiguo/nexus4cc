@@ -484,6 +484,7 @@ export default function Terminal({ token }: Props) {
   const [windowsLoaded, setWindowsLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pasteFileRef = useRef<HTMLInputElement>(null)
+  const uploadFileRef = useRef<(file: File) => Promise<void>>(async () => {})
   // Upload queue: multi-file concurrent upload with progress
   type UploadStatus = 'pending' | 'uploading' | 'done' | 'error' | 'conflict'
   interface UploadItem {
@@ -1721,6 +1722,30 @@ export default function Terminal({ token }: Props) {
 
   // Keep refs current on every render
   activeWindowIndexRef.current = activeWindowIndex
+  uploadFileRef.current = uploadFile
+
+  useEffect(() => {
+    function handlePaste(e: ClipboardEvent) {
+      const target = e.target as HTMLElement | null
+      if (target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        (target as HTMLElement).isContentEditable
+      )) return
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          e.preventDefault()
+          const file = items[i].getAsFile()
+          if (file) uploadFileRef.current(file)
+          return
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [])
 
   // Effect A: create xterm instance + DOM attachment + touch/resize events (once per token)
   useEffect(() => {

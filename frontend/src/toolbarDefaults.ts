@@ -57,7 +57,7 @@ export const ALL_KEYS: KeyDef[] = [
   { id: 'bang',       label: '!',     seq: '!',        desc: 'toolbarKeys.bashMode', category: 'input' },
   { id: 'at',         label: '@',     seq: '@',        desc: 'toolbarKeys.filePathComplete', category: 'input' },
   { id: 'backslash',  label: '\\',    seq: '\\',       desc: 'toolbarKeys.backslash', category: 'input' },
-  { id: 'ctrl-v',     label: '^V',    seq: '\x16',     desc: 'toolbarKeys.literalNext', category: 'input' },
+  { id: 'ctrl-v',     label: '^V',    seq: '',         desc: 'toolbarKeys.pasteClipboard', action: 'pasteClipboard', category: 'input' },
   { id: 'paste-text', label: 'Paste', seq: '',         desc: 'toolbarKeys.pasteText', action: 'pasteClipboard', category: 'input' },
   { id: 'shift-tab',  label: '^⇥',    seq: '\x1b[Z',   desc: 'toolbarKeys.togglePermission', category: 'input' },
 
@@ -83,7 +83,7 @@ export const FACTORY_EXPANDED = [
   // Control group
   'ctrl-r', 'ctrl-b', 'ctrl-o', 'ctrl-t', 'ctrl-f', 'ctrl-g',
   // Input group
-  'shift-tab', 'bang', 'at', 'paste-text',
+  'shift-tab', 'bang', 'at',
   // UI Actions
   'terminal-history', 'scroll-btm', 'copy-term', 'fit',
 ]

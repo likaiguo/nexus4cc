@@ -221,7 +221,7 @@
     "bashMode": "Bash mode",
     "filePathComplete": "File path complete",
     "backslash": "Backslash",
-    "pasteClipboard": "Paste clipboard",
+    "pasteClipboard": "Paste / upload clipboard",
     "literalNext": "Terminal Ctrl+V (literal next)",
     "pasteText": "Paste text (edit then send)",
     "terminalHistory": "Open terminal history",
