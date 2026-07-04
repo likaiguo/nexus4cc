@@ -121,7 +121,9 @@ test('workspace browser shows save only in edit mode and reuses CodeMirror for r
 
 test('workspace editor surfaces are scrollable and preserve normal one-finger touch scrolling', () => {
   const editorOverlaySource = sourceBetween(workspaceBrowserSource, '      {/* 文件编辑器 */}', 'function getFileIcon')
-  assert.doesNotMatch(editorOverlaySource, /touch-none/)
+  const editorContentSource = sourceBetween(editorOverlaySource, '          {/* Editor Content */}', '          {/* Editor Footer */}')
+  assert.match(editorContentSource, /className="relative flex-1 p-4 overflow-hidden"/)
+  assert.doesNotMatch(editorContentSource, /className="relative flex-1 p-4 overflow-hidden[^"]*touch-none/)
   assert.match(editorOverlaySource, /className="workspace-code-editor w-full h-full bg-nexus-bg-2 border border-nexus-border rounded overflow-auto"/)
   assert.match(editorOverlaySource, /className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-auto"/)
 
@@ -143,7 +145,7 @@ test('workspace browser provides bounded zoom controls and pinch zoom through sh
   assert.match(workspaceBrowserSource, /setEditorFontSize\(size => clampEditorFontSize\(size \+ delta\)\)/)
 
   const editorOverlaySource = sourceBetween(workspaceBrowserSource, '      {/* 文件编辑器 */}', 'function getFileIcon')
-  assert.match(editorOverlaySource, /aria-label="Editor font size controls"/)
+  assert.match(editorOverlaySource, /aria-label="Floating editor controls"/)
   assert.match(editorOverlaySource, /aria-label="Zoom out"/)
   assert.match(editorOverlaySource, /aria-label="Reset font size"/)
   assert.match(editorOverlaySource, /aria-label="Zoom in"/)
@@ -151,6 +153,31 @@ test('workspace browser provides bounded zoom controls and pinch zoom through sh
   assert.match(editorOverlaySource, /changeEditorFontSize\(EDITOR_FONT_SIZE_STEP\)/)
   assert.match(editorOverlaySource, /disabled=\{editorFontSize <= EDITOR_FONT_SIZE_MIN\}/)
   assert.match(editorOverlaySource, /disabled=\{editorFontSize >= EDITOR_FONT_SIZE_MAX\}/)
+})
+
+test('workspace browser floating controls are draggable and scroll active editor surface', () => {
+  assert.match(workspaceBrowserSource, /const EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP = 144/)
+  assert.match(workspaceBrowserSource, /function clampFloatingToolbarTop\(top: number\): number/)
+  assert.match(workspaceBrowserSource, /const editorScrollSurfaceRef = useRef<HTMLDivElement \| null>\(null\)/)
+  assert.match(workspaceBrowserSource, /const floatingToolbarDragRef = useRef<\{ pointerId: number; startY: number; startTop: number; moved: boolean \} \| null>\(null\)/)
+  assert.match(workspaceBrowserSource, /const suppressFloatingToolbarClickRef = useRef\(false\)/)
+  assert.match(workspaceBrowserSource, /const \[floatingToolbarTop, setFloatingToolbarTop\] = useState\(EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP\)/)
+  assert.match(workspaceBrowserSource, /function getActiveEditorScrollSurface\(\): HTMLElement \| null/)
+  assert.match(workspaceBrowserSource, /querySelector<HTMLElement>\('\.cm-scroller'\) \|\| wrapper/)
+  assert.match(workspaceBrowserSource, /function scrollEditorSurface\(position: 'top' \| 'bottom'\)/)
+  assert.match(workspaceBrowserSource, /surface\.scrollTo\(\{ top, behavior: 'smooth' \}\)/)
+
+  const editorOverlaySource = sourceBetween(workspaceBrowserSource, '      {/* 文件编辑器 */}', 'function getFileIcon')
+  assert.match(editorOverlaySource, /style=\{\{ top: `\$\{floatingToolbarTop\}px` \}\}/)
+  assert.match(editorOverlaySource, /onPointerDown=\{handleFloatingToolbarPointerDown\}/)
+  assert.match(editorOverlaySource, /onPointerMove=\{handleFloatingToolbarPointerMove\}/)
+  assert.match(editorOverlaySource, /onPointerUp=\{handleFloatingToolbarPointerEnd\}/)
+  assert.match(editorOverlaySource, /aria-label="Jump to top"/)
+  assert.match(editorOverlaySource, /aria-label="Jump to bottom"/)
+  assert.match(editorOverlaySource, /scrollEditorSurface\('top'\)/)
+  assert.match(editorOverlaySource, /scrollEditorSurface\('bottom'\)/)
+  assert.match(editorOverlaySource, /ref=\{editorScrollSurfaceRef\}/)
+  assert.doesNotMatch(editorOverlaySource, /aria-label="Editor font size controls"/)
 })
 
 test('workspace browser saves with file metadata and keeps editor open on save errors', () => {

@@ -40,6 +40,9 @@ const EDITOR_FONT_SIZE_DEFAULT = 14
 const EDITOR_FONT_SIZE_MIN = 8
 const EDITOR_FONT_SIZE_MAX = 32
 const EDITOR_FONT_SIZE_STEP = 2
+const EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP = 144
+const EDITOR_FLOATING_TOOLBAR_MIN_TOP = 76
+const EDITOR_FLOATING_TOOLBAR_HEIGHT = 220
 
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return ''
@@ -56,6 +59,14 @@ function formatTime(ts: number): string {
 function clampEditorFontSize(size: number): number {
   if (!Number.isFinite(size)) return EDITOR_FONT_SIZE_DEFAULT
   return Math.max(EDITOR_FONT_SIZE_MIN, Math.min(EDITOR_FONT_SIZE_MAX, size))
+}
+
+function clampFloatingToolbarTop(top: number): number {
+  if (!Number.isFinite(top)) return EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP
+  const maxTop = typeof window === 'undefined'
+    ? EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP
+    : Math.max(EDITOR_FLOATING_TOOLBAR_MIN_TOP, window.innerHeight - EDITOR_FLOATING_TOOLBAR_HEIGHT)
+  return Math.max(EDITOR_FLOATING_TOOLBAR_MIN_TOP, Math.min(maxTop, top))
 }
 
 export default function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, onPathChange }: Props) {
@@ -135,6 +146,10 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const [editorFontSize, setEditorFontSize] = useState(EDITOR_FONT_SIZE_DEFAULT)
   const [pinchStartDist, setPinchStartDist] = useState(0)
   const [pinchStartFontSize, setPinchStartFontSize] = useState(EDITOR_FONT_SIZE_DEFAULT)
+  const editorScrollSurfaceRef = useRef<HTMLDivElement | null>(null)
+  const floatingToolbarDragRef = useRef<{ pointerId: number; startY: number; startTop: number; moved: boolean } | null>(null)
+  const suppressFloatingToolbarClickRef = useRef(false)
+  const [floatingToolbarTop, setFloatingToolbarTop] = useState(EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP)
 
   // 长按 / 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null)
@@ -563,6 +578,62 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
 
   function changeEditorFontSize(delta: number) {
     setEditorFontSize(size => clampEditorFontSize(size + delta))
+  }
+
+  function getActiveEditorScrollSurface(): HTMLElement | null {
+    const wrapper = editorScrollSurfaceRef.current
+    if (!wrapper) return null
+    return wrapper.querySelector<HTMLElement>('.cm-scroller') || wrapper
+  }
+
+  function scrollEditorSurface(position: 'top' | 'bottom') {
+    const surface = getActiveEditorScrollSurface()
+    if (!surface) return
+    const top = position === 'top' ? 0 : surface.scrollHeight
+    surface.scrollTo({ top, behavior: 'smooth' })
+  }
+
+  function handleFloatingToolbarPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    floatingToolbarDragRef.current = {
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      startTop: floatingToolbarTop,
+      moved: false,
+    }
+    suppressFloatingToolbarClickRef.current = false
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {}
+  }
+
+  function handleFloatingToolbarPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = floatingToolbarDragRef.current
+    if (!drag || drag.pointerId !== e.pointerId) return
+    const deltaY = e.clientY - drag.startY
+    if (Math.abs(deltaY) > 4) {
+      drag.moved = true
+      suppressFloatingToolbarClickRef.current = true
+    }
+    setFloatingToolbarTop(clampFloatingToolbarTop(drag.startTop + deltaY))
+  }
+
+  function handleFloatingToolbarPointerEnd(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = floatingToolbarDragRef.current
+    if (drag?.pointerId !== e.pointerId) return
+    floatingToolbarDragRef.current = null
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {}
+    if (drag.moved) {
+      window.setTimeout(() => {
+        suppressFloatingToolbarClickRef.current = false
+      }, 0)
+    }
+  }
+
+  function runFloatingToolbarAction(action: () => void) {
+    if (suppressFloatingToolbarClickRef.current) return
+    action()
   }
 
   // 构建面包屑路径（使用绝对路径）
@@ -1175,7 +1246,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 {isEditorPreviewMode ? t('workspace.edit') : t('workspace.preview')}
               </button>
               <button
-                onClick={() => { setEditingFile(null); setEditorContent(''); setEditorError(''); setEditorMode('preview'); setEditorFontSize(14) }}
+                onClick={() => { setEditingFile(null); setEditorContent(''); setEditorError(''); setEditorMode('preview'); setEditorFontSize(EDITOR_FONT_SIZE_DEFAULT) }}
                 className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
               >
                 <Icon name="x" size={20} />
@@ -1189,20 +1260,79 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           )}
           {/* Editor Content */}
           <div
-            className="flex-1 p-4 overflow-hidden"
+            className="relative flex-1 p-4 overflow-hidden"
             onTouchStart={handleEditorTouchStart}
             onTouchMove={handleEditorTouchMove}
             onTouchEnd={handleEditorTouchEnd}
           >
+            <div
+              className="absolute left-2 z-[475] flex flex-col items-center gap-1 rounded-md border border-nexus-border bg-nexus-bg/95 p-1 shadow-lg touch-none select-none"
+              style={{ top: `${floatingToolbarTop}px` }}
+              aria-label="Floating editor controls"
+              onPointerDown={handleFloatingToolbarPointerDown}
+              onPointerMove={handleFloatingToolbarPointerMove}
+              onPointerUp={handleFloatingToolbarPointerEnd}
+              onPointerCancel={handleFloatingToolbarPointerEnd}
+            >
+              <button
+                type="button"
+                onClick={() => runFloatingToolbarAction(() => scrollEditorSurface('top'))}
+                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 hover:bg-nexus-bg-2"
+                title="Jump to top"
+                aria-label="Jump to top"
+              >
+                <Icon name="chevronUp" size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => runFloatingToolbarAction(() => changeEditorFontSize(EDITOR_FONT_SIZE_STEP))}
+                disabled={editorFontSize >= EDITOR_FONT_SIZE_MAX}
+                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
+                title="Zoom in"
+                aria-label="Zoom in"
+              >
+                <Icon name="plus" size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => runFloatingToolbarAction(resetEditorFontSize)}
+                disabled={editorFontSize === EDITOR_FONT_SIZE_DEFAULT}
+                className="h-8 min-w-8 px-1 rounded text-[11px] text-nexus-text-2 disabled:opacity-60 hover:bg-nexus-bg-2"
+                title="Reset font size"
+                aria-label="Reset font size"
+              >
+                {editorFontSize}px
+              </button>
+              <button
+                type="button"
+                onClick={() => runFloatingToolbarAction(() => changeEditorFontSize(-EDITOR_FONT_SIZE_STEP))}
+                disabled={editorFontSize <= EDITOR_FONT_SIZE_MIN}
+                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
+                title="Zoom out"
+                aria-label="Zoom out"
+              >
+                <span className="text-lg leading-none">-</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => runFloatingToolbarAction(() => scrollEditorSurface('bottom'))}
+                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 hover:bg-nexus-bg-2"
+                title="Jump to bottom"
+                aria-label="Jump to bottom"
+              >
+                <Icon name="chevronDown" size={16} />
+              </button>
+            </div>
             {isEditorMarkdownPreview ? (
               <div
+                ref={editorScrollSurfaceRef}
                 className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-auto"
                 style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
               >
                 <MarkdownPreview content={editorContent} fontSize={editorFontSize} />
               </div>
             ) : (
-              <div className="workspace-code-editor w-full h-full bg-nexus-bg-2 border border-nexus-border rounded overflow-auto">
+              <div ref={editorScrollSurfaceRef} className="workspace-code-editor w-full h-full bg-nexus-bg-2 border border-nexus-border rounded overflow-auto">
                 <WorkspaceCodeEditor
                   value={editorContent}
                   language={editingFile.language}
@@ -1222,37 +1352,6 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           <div className="px-4 py-2 border-t border-nexus-border flex items-center justify-between text-xs text-nexus-muted">
             <div className="flex items-center gap-2 min-w-0">
               <span className="shrink-0">{editorContent.length} {t('workspace.chars')}</span>
-              <div className="flex items-center gap-1 shrink-0" aria-label="Editor font size controls">
-                <button
-                  type="button"
-                  onClick={() => changeEditorFontSize(-EDITOR_FONT_SIZE_STEP)}
-                  disabled={editorFontSize <= EDITOR_FONT_SIZE_MIN}
-                  className="w-7 h-7 flex items-center justify-center rounded border border-nexus-border text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
-                  title="Zoom out"
-                  aria-label="Zoom out"
-                >
-                  <span className="text-base leading-none">-</span>
-                </button>
-                <button
-                  onClick={resetEditorFontSize}
-                  className="h-7 min-w-[42px] px-2 rounded border border-nexus-border text-nexus-text-2 hover:bg-nexus-bg-2 disabled:opacity-60"
-                  disabled={editorFontSize === EDITOR_FONT_SIZE_DEFAULT}
-                  title="Reset font size"
-                  aria-label="Reset font size"
-                >
-                  {editorFontSize}px
-                </button>
-                <button
-                  type="button"
-                  onClick={() => changeEditorFontSize(EDITOR_FONT_SIZE_STEP)}
-                  disabled={editorFontSize >= EDITOR_FONT_SIZE_MAX}
-                  className="w-7 h-7 flex items-center justify-center rounded border border-nexus-border text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
-                  title="Zoom in"
-                  aria-label="Zoom in"
-                >
-                  <Icon name="plus" size={14} />
-                </button>
-              </div>
             </div>
             <span className="truncate text-right min-w-0">{editingFile.path}</span>
           </div>
