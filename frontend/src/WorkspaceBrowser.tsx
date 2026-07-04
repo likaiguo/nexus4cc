@@ -40,9 +40,20 @@ const EDITOR_FONT_SIZE_DEFAULT = 14
 const EDITOR_FONT_SIZE_MIN = 8
 const EDITOR_FONT_SIZE_MAX = 32
 const EDITOR_FONT_SIZE_STEP = 2
-const EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP = 144
-const EDITOR_FLOATING_TOOLBAR_MIN_TOP = 76
-const EDITOR_FLOATING_TOOLBAR_HEIGHT = 220
+const EDITOR_FLOATING_TOOLBAR_DEFAULT_POSITION = { x: 8, y: 144 }
+const EDITOR_FLOATING_TOOLBAR_MIN_GAP = 8
+const EDITOR_FLOATING_TOOLBAR_WIDTH = 42
+const EDITOR_FLOATING_TOOLBAR_HEIGHT = 188
+
+interface FloatingToolbarPosition {
+  x: number
+  y: number
+}
+
+interface FloatingToolbarBounds {
+  width: number
+  height: number
+}
 
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return ''
@@ -61,12 +72,26 @@ function clampEditorFontSize(size: number): number {
   return Math.max(EDITOR_FONT_SIZE_MIN, Math.min(EDITOR_FONT_SIZE_MAX, size))
 }
 
-function clampFloatingToolbarTop(top: number): number {
-  if (!Number.isFinite(top)) return EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP
-  const maxTop = typeof window === 'undefined'
-    ? EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP
-    : Math.max(EDITOR_FLOATING_TOOLBAR_MIN_TOP, window.innerHeight - EDITOR_FLOATING_TOOLBAR_HEIGHT)
-  return Math.max(EDITOR_FLOATING_TOOLBAR_MIN_TOP, Math.min(maxTop, top))
+function clampFloatingToolbarPosition(position: FloatingToolbarPosition, bounds?: FloatingToolbarBounds): FloatingToolbarPosition {
+  const fallbackWidth = typeof window === 'undefined' ? 360 : window.innerWidth
+  const fallbackHeight = typeof window === 'undefined' ? 640 : window.innerHeight
+  const width = Number.isFinite(bounds?.width) && bounds!.width > 0 ? bounds!.width : fallbackWidth
+  const height = Number.isFinite(bounds?.height) && bounds!.height > 0 ? bounds!.height : fallbackHeight
+  const maxX = Math.max(
+    EDITOR_FLOATING_TOOLBAR_MIN_GAP,
+    width - EDITOR_FLOATING_TOOLBAR_WIDTH - EDITOR_FLOATING_TOOLBAR_MIN_GAP,
+  )
+  const maxY = Math.max(
+    EDITOR_FLOATING_TOOLBAR_MIN_GAP,
+    height - EDITOR_FLOATING_TOOLBAR_HEIGHT - EDITOR_FLOATING_TOOLBAR_MIN_GAP,
+  )
+  const x = Number.isFinite(position.x) ? position.x : EDITOR_FLOATING_TOOLBAR_DEFAULT_POSITION.x
+  const y = Number.isFinite(position.y) ? position.y : EDITOR_FLOATING_TOOLBAR_DEFAULT_POSITION.y
+
+  return {
+    x: Math.max(EDITOR_FLOATING_TOOLBAR_MIN_GAP, Math.min(maxX, x)),
+    y: Math.max(EDITOR_FLOATING_TOOLBAR_MIN_GAP, Math.min(maxY, y)),
+  }
 }
 
 export default function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, onPathChange }: Props) {
@@ -147,9 +172,29 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const [pinchStartDist, setPinchStartDist] = useState(0)
   const [pinchStartFontSize, setPinchStartFontSize] = useState(EDITOR_FONT_SIZE_DEFAULT)
   const editorScrollSurfaceRef = useRef<HTMLDivElement | null>(null)
-  const floatingToolbarDragRef = useRef<{ pointerId: number; startY: number; startTop: number; moved: boolean } | null>(null)
+  const editorContentRef = useRef<HTMLDivElement | null>(null)
+  const floatingToolbarDragRef = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    startPosition: FloatingToolbarPosition
+    moved: boolean
+  } | null>(null)
   const suppressFloatingToolbarClickRef = useRef(false)
-  const [floatingToolbarTop, setFloatingToolbarTop] = useState(EDITOR_FLOATING_TOOLBAR_DEFAULT_TOP)
+  const [floatingToolbarPosition, setFloatingToolbarPosition] = useState<FloatingToolbarPosition>(EDITOR_FLOATING_TOOLBAR_DEFAULT_POSITION)
+
+  useEffect(() => {
+    function clampToolbarAfterViewportChange() {
+      setFloatingToolbarPosition(position => clampFloatingToolbarPosition(position, getFloatingToolbarBounds()))
+    }
+
+    window.addEventListener('resize', clampToolbarAfterViewportChange)
+    window.addEventListener('orientationchange', clampToolbarAfterViewportChange)
+    return () => {
+      window.removeEventListener('resize', clampToolbarAfterViewportChange)
+      window.removeEventListener('orientationchange', clampToolbarAfterViewportChange)
+    }
+  }, [])
 
   // 长按 / 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null)
@@ -580,47 +625,67 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     setEditorFontSize(size => clampEditorFontSize(size + delta))
   }
 
-  function getActiveEditorScrollSurface(): HTMLElement | null {
+  function getActiveEditorScrollSurfaces(): HTMLElement[] {
     const wrapper = editorScrollSurfaceRef.current
-    if (!wrapper) return null
-    return wrapper.querySelector<HTMLElement>('.cm-scroller') || wrapper
+    if (!wrapper) return []
+    const surfaces = Array.from(wrapper.querySelectorAll<HTMLElement>('.cm-scroller'))
+    surfaces.push(wrapper)
+    return surfaces
   }
 
   function scrollEditorSurface(position: 'top' | 'bottom') {
-    const surface = getActiveEditorScrollSurface()
-    if (!surface) return
-    const top = position === 'top' ? 0 : surface.scrollHeight
-    surface.scrollTo({ top, behavior: 'smooth' })
+    for (const surface of getActiveEditorScrollSurfaces()) {
+      const top = position === 'top' ? 0 : Math.max(surface.scrollHeight, surface.offsetHeight, surface.clientHeight)
+      surface.scrollTop = top
+      surface.scrollTo({ top, behavior: 'auto' })
+    }
+  }
+
+  function getFloatingToolbarBounds(): FloatingToolbarBounds | undefined {
+    const rect = editorContentRef.current?.getBoundingClientRect()
+    if (!rect) return undefined
+    return { width: rect.width, height: rect.height }
   }
 
   function handleFloatingToolbarPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     floatingToolbarDragRef.current = {
       pointerId: e.pointerId,
+      startX: e.clientX,
       startY: e.clientY,
-      startTop: floatingToolbarTop,
+      startPosition: floatingToolbarPosition,
       moved: false,
     }
     suppressFloatingToolbarClickRef.current = false
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId)
-    } catch {}
+    e.stopPropagation()
   }
 
   function handleFloatingToolbarPointerMove(e: React.PointerEvent<HTMLDivElement>) {
     const drag = floatingToolbarDragRef.current
     if (!drag || drag.pointerId !== e.pointerId) return
+    const deltaX = e.clientX - drag.startX
     const deltaY = e.clientY - drag.startY
-    if (Math.abs(deltaY) > 4) {
+    if (Math.hypot(deltaX, deltaY) > 4) {
+      if (!drag.moved) {
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId)
+        } catch {}
+      }
       drag.moved = true
       suppressFloatingToolbarClickRef.current = true
     }
-    setFloatingToolbarTop(clampFloatingToolbarTop(drag.startTop + deltaY))
+    setFloatingToolbarPosition(clampFloatingToolbarPosition({
+      x: drag.startPosition.x + deltaX,
+      y: drag.startPosition.y + deltaY,
+    }, getFloatingToolbarBounds()))
+    e.preventDefault()
+    e.stopPropagation()
   }
 
   function handleFloatingToolbarPointerEnd(e: React.PointerEvent<HTMLDivElement>) {
     const drag = floatingToolbarDragRef.current
     if (drag?.pointerId !== e.pointerId) return
     floatingToolbarDragRef.current = null
+    e.stopPropagation()
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
     } catch {}
@@ -1260,14 +1325,15 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           )}
           {/* Editor Content */}
           <div
+            ref={editorContentRef}
             className="relative flex-1 p-4 overflow-hidden"
             onTouchStart={handleEditorTouchStart}
             onTouchMove={handleEditorTouchMove}
             onTouchEnd={handleEditorTouchEnd}
           >
             <div
-              className="absolute left-2 z-[475] flex flex-col items-center gap-1 rounded-md border border-nexus-border bg-nexus-bg/95 p-1 shadow-lg touch-none select-none"
-              style={{ top: `${floatingToolbarTop}px` }}
+              className="absolute z-[475] flex flex-col items-center gap-1 rounded-md border border-nexus-accent/70 bg-nexus-bg p-1 text-nexus-text shadow-[0_12px_32px_rgba(0,0,0,0.5)] ring-1 ring-white/10 touch-none select-none"
+              style={{ left: `${floatingToolbarPosition.x}px`, top: `${floatingToolbarPosition.y}px` }}
               aria-label="Floating editor controls"
               onPointerDown={handleFloatingToolbarPointerDown}
               onPointerMove={handleFloatingToolbarPointerMove}
@@ -1277,7 +1343,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               <button
                 type="button"
                 onClick={() => runFloatingToolbarAction(() => scrollEditorSurface('top'))}
-                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 hover:bg-nexus-bg-2"
+                className="w-8 h-8 flex items-center justify-center rounded border border-nexus-border bg-nexus-bg-2 text-nexus-text hover:border-nexus-accent hover:bg-nexus-accent hover:text-white"
                 title="Jump to top"
                 aria-label="Jump to top"
               >
@@ -1287,7 +1353,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 type="button"
                 onClick={() => runFloatingToolbarAction(() => changeEditorFontSize(EDITOR_FONT_SIZE_STEP))}
                 disabled={editorFontSize >= EDITOR_FONT_SIZE_MAX}
-                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
+                className="w-8 h-8 flex items-center justify-center rounded border border-nexus-border bg-nexus-bg-2 text-nexus-text disabled:opacity-45 disabled:cursor-not-allowed hover:border-nexus-accent hover:bg-nexus-accent hover:text-white"
                 title="Zoom in"
                 aria-label="Zoom in"
               >
@@ -1297,7 +1363,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 type="button"
                 onClick={() => runFloatingToolbarAction(resetEditorFontSize)}
                 disabled={editorFontSize === EDITOR_FONT_SIZE_DEFAULT}
-                className="h-8 min-w-8 px-1 rounded text-[11px] text-nexus-text-2 disabled:opacity-60 hover:bg-nexus-bg-2"
+                className="h-8 min-w-8 px-1 rounded border border-nexus-border bg-nexus-bg-2 text-[11px] text-nexus-text disabled:opacity-60 hover:border-nexus-accent hover:bg-nexus-accent hover:text-white"
                 title="Reset font size"
                 aria-label="Reset font size"
               >
@@ -1307,7 +1373,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 type="button"
                 onClick={() => runFloatingToolbarAction(() => changeEditorFontSize(-EDITOR_FONT_SIZE_STEP))}
                 disabled={editorFontSize <= EDITOR_FONT_SIZE_MIN}
-                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
+                className="w-8 h-8 flex items-center justify-center rounded border border-nexus-border bg-nexus-bg-2 text-nexus-text disabled:opacity-45 disabled:cursor-not-allowed hover:border-nexus-accent hover:bg-nexus-accent hover:text-white"
                 title="Zoom out"
                 aria-label="Zoom out"
               >
@@ -1316,7 +1382,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               <button
                 type="button"
                 onClick={() => runFloatingToolbarAction(() => scrollEditorSurface('bottom'))}
-                className="w-8 h-8 flex items-center justify-center rounded text-nexus-text-2 hover:bg-nexus-bg-2"
+                className="w-8 h-8 flex items-center justify-center rounded border border-nexus-border bg-nexus-bg-2 text-nexus-text hover:border-nexus-accent hover:bg-nexus-accent hover:text-white"
                 title="Jump to bottom"
                 aria-label="Jump to bottom"
               >

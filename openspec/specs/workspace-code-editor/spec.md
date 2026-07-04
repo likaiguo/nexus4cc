@@ -102,7 +102,8 @@ The workspace code preview/editor SHALL allow users to inspect wide and long tex
 #### Scenario: Zoom with explicit controls
 - **WHEN** the user opens a Markdown preview, code preview, or code editor
 - **THEN** the overlay SHALL provide visible controls to decrease, reset, and increase the editor font size
-- **AND** those controls SHALL be available in a floating toolbar on the left side of the editor overlay
+- **AND** those controls SHALL be available in a floating toolbar inside the editor overlay
+- **AND** those controls SHALL maintain visible contrast against the editor and preview backgrounds
 - **AND** those controls SHALL keep font size within the supported range
 
 #### Scenario: Zoom with pinch gesture
@@ -112,7 +113,7 @@ The workspace code preview/editor SHALL allow users to inspect wide and long tex
 
 #### Scenario: Reposition floating controls
 - **WHEN** the user drags the floating toolbar
-- **THEN** the toolbar SHALL move vertically within the editor overlay
+- **THEN** the toolbar SHALL move horizontally and vertically within the editor overlay
 - **AND** dragging the toolbar SHALL NOT scroll or modify the file content
 
 #### Scenario: Jump to file top and bottom
