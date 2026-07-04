@@ -3,6 +3,13 @@ import { useTranslation } from 'react-i18next'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { Icon } from './icons'
+import WorkspaceCodeEditor from './WorkspaceCodeEditor'
+import {
+  detectWorkspaceEditorFileType,
+  isMarkdownWorkspaceFile,
+  isWorkspaceTextFile,
+  type WorkspaceEditorLanguage,
+} from './workspaceEditor'
 
 interface FileEntry {
   name: string
@@ -18,6 +25,16 @@ interface Props {
   currentSession?: string
   onPathChange?: (path: string) => void
 }
+
+interface EditingFileState {
+  name: string
+  path: string
+  language: WorkspaceEditorLanguage
+  mtimeMs?: number
+  size?: number
+}
+
+type EditorMode = 'preview' | 'edit'
 
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return ''
@@ -98,10 +115,11 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const [isCreating, setIsCreating] = useState(false)
 
   // 文件编辑器状态
-  const [editingFile, setEditingFile] = useState<{ name: string; path: string; content: string } | null>(null)
+  const [editingFile, setEditingFile] = useState<EditingFileState | null>(null)
   const [editorContent, setEditorContent] = useState('')
+  const [editorError, setEditorError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
-  const [isPreviewMode, setIsPreviewMode] = useState(false)
+  const [editorMode, setEditorMode] = useState<EditorMode>('preview')
 
   // 编辑器字体大小（双指缩放调整）
   const [editorFontSize, setEditorFontSize] = useState(14) // 基础 14px
@@ -356,6 +374,14 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     document.body.removeChild(a)
   }
 
+  function viewFile(name: string) {
+    if (isTextFile(name)) {
+      openEditor(name, 'preview')
+      return
+    }
+    openFile(name)
+  }
+
   // 下载文件
   function downloadFile(name: string) {
     const url = getFileUrl(name)
@@ -419,16 +445,27 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   }
 
   // 打开文件编辑器
-  async function openEditor(name: string) {
+  async function openEditor(name: string, mode: EditorMode = 'preview') {
     if (!currentPath) return
     const filePath = currentPath.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`
     try {
       const r = await fetch(`/api/workspace/file?path=${encodeURIComponent(filePath)}`, { headers })
-      if (!r.ok) throw new Error('Failed to load file')
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to load file')
+      }
       const data = await r.json()
-      setEditingFile({ name, path: filePath, content: data.content })
+      const fileType = detectWorkspaceEditorFileType(name)
+      setEditingFile({
+        name,
+        path: filePath,
+        language: fileType.language,
+        mtimeMs: typeof data.mtimeMs === 'number' ? data.mtimeMs : undefined,
+        size: typeof data.size === 'number' ? data.size : undefined,
+      })
       setEditorContent(data.content)
-      setIsPreviewMode(false)
+      setEditorError('')
+      setEditorMode(mode)
     } catch (e: any) {
       setError(e.message || 'Failed to open file')
     }
@@ -442,13 +479,17 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       const r = await fetch('/api/workspace/file', {
         method: 'PUT',
         headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: editingFile.path, content: editorContent }),
+        body: JSON.stringify({ path: editingFile.path, content: editorContent, mtimeMs: editingFile.mtimeMs }),
       })
-      if (!r.ok) throw new Error('Failed to save file')
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to save file')
+      }
       setEditingFile(null)
       setEditorContent('')
+      setEditorError('')
     } catch (e: any) {
-      setError(e.message || 'Failed to save file')
+      setEditorError(e.message || 'Failed to save file')
     } finally {
       setIsSaving(false)
     }
@@ -459,21 +500,18 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
     if (entry.type === 'dir') {
       navigateTo(entry.name)
     } else {
-      openEditor(entry.name)
+      viewFile(entry.name)
     }
   }
 
   // 判断是否为文本文件
   function isTextFile(name: string): boolean {
-    const ext = name.split('.').pop()?.toLowerCase() || ''
-    const textExts = ['txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'json', 'yml', 'yaml', 'toml', 'css', 'html', 'htm', 'xml', 'svg', 'sh', 'bash', 'zsh', 'py', 'go', 'rs', 'java', 'c', 'cpp', 'h', 'hpp', 'log', 'env', 'dockerfile', 'gitignore']
-    return textExts.includes(ext) || !ext
+    return isWorkspaceTextFile(name)
   }
 
   // 判断是否为 Markdown 文件
   function isMarkdownFile(name: string): boolean {
-    const ext = name.split('.').pop()?.toLowerCase() || ''
-    return ext === 'md' || ext === 'markdown'
+    return isMarkdownWorkspaceFile(name)
   }
 
   // 双指缩放：计算两点间距离
@@ -559,6 +597,8 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const selectedEntry = selectedName && selectedName !== '..'
     ? sortedEntries.find(e => e.name === selectedName)
     : null
+  const isEditorPreviewMode = editorMode === 'preview'
+  const isEditorMarkdownPreview = editingFile !== null && isMarkdownFile(editingFile.name) && isEditorPreviewMode
 
   return (
     <div className="fixed inset-0 z-[450] bg-nexus-bg flex flex-col">
@@ -782,7 +822,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               </button>
             )}
             <button
-              onClick={() => openFile(selectedEntry.name)}
+              onClick={() => viewFile(selectedEntry.name)}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-bg-2 hover:bg-nexus-bg-2/80 text-nexus-text text-xs rounded border border-nexus-border transition-colors"
               title={t('workspace.view')}
             >
@@ -831,7 +871,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
             {contextMenu.entry.type === 'file' && (
               <>
                 <button
-                  onClick={() => { openFile(contextMenu.entry.name); setContextMenu(null) }}
+                  onClick={() => { viewFile(contextMenu.entry.name); setContextMenu(null) }}
                   className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
                 >
                   <Icon name="eye" size={14} />
@@ -1101,57 +1141,68 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={saveFile}
-                disabled={isSaving}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-xs rounded transition-colors disabled:opacity-50"
-              >
-                <Icon name="save" size={14} />
-                {isSaving ? t('common.saving') : t('common.save')}
-              </button>
-              {editingFile && isMarkdownFile(editingFile.name) && (
+              {!isEditorPreviewMode && (
                 <button
-                  onClick={() => setIsPreviewMode(!isPreviewMode)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
-                    isPreviewMode
-                      ? 'bg-nexus-accent text-white border-nexus-accent'
-                      : 'bg-nexus-bg-2 text-nexus-text border-nexus-border hover:bg-nexus-bg-2/80'
-                  }`}
+                  onClick={saveFile}
+                  disabled={isSaving}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-xs rounded transition-colors disabled:opacity-50"
                 >
-                  <Icon name="eye" size={14} />
-                  {isPreviewMode ? t('workspace.edit') : t('workspace.preview')}
+                  <Icon name="save" size={14} />
+                  {isSaving ? t('common.saving') : t('common.save')}
                 </button>
               )}
               <button
-                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setEditorFontSize(14) }}
+                onClick={() => setEditorMode(isEditorPreviewMode ? 'edit' : 'preview')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
+                  isEditorPreviewMode
+                    ? 'bg-nexus-bg-2 text-nexus-text border-nexus-border hover:bg-nexus-bg-2/80'
+                    : 'bg-nexus-accent text-white border-nexus-accent'
+                }`}
+              >
+                <Icon name={isEditorPreviewMode ? 'edit' : 'eye'} size={14} />
+                {isEditorPreviewMode ? t('workspace.edit') : t('workspace.preview')}
+              </button>
+              <button
+                onClick={() => { setEditingFile(null); setEditorContent(''); setEditorError(''); setEditorMode('preview'); setEditorFontSize(14) }}
                 className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
               >
                 <Icon name="x" size={20} />
               </button>
             </div>
           </div>
+          {editorError && (
+            <div className="px-4 py-2 bg-nexus-error/10 border-b border-nexus-error/30 text-nexus-error text-xs">
+              {editorError}
+            </div>
+          )}
           {/* Editor Content */}
           <div
-            className="flex-1 p-4 overflow-hidden touch-none"
+            className="flex-1 p-4 overflow-hidden"
             onTouchStart={handleEditorTouchStart}
             onTouchMove={handleEditorTouchMove}
             onTouchEnd={handleEditorTouchEnd}
           >
-            {editingFile && isMarkdownFile(editingFile.name) && isPreviewMode ? (
+            {isEditorMarkdownPreview ? (
               <div
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-y-auto"
+                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-auto"
                 style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
               >
                 <MarkdownPreview content={editorContent} fontSize={editorFontSize} />
               </div>
             ) : (
-              <textarea
-                value={editorContent}
-                onChange={(e) => setEditorContent(e.target.value)}
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-3 text-nexus-text font-mono resize-none focus:outline-none focus:border-nexus-accent"
-                style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
-                spellCheck={false}
-              />
+              <div className="workspace-code-editor w-full h-full bg-nexus-bg-2 border border-nexus-border rounded overflow-auto">
+                <WorkspaceCodeEditor
+                  value={editorContent}
+                  language={editingFile.language}
+                  fontSize={editorFontSize}
+                  readOnly={isEditorPreviewMode}
+                  lineWrapping={false}
+                  onChange={isEditorPreviewMode ? undefined : (value) => {
+                    setEditorContent(value)
+                    if (editorError) setEditorError('')
+                  }}
+                />
+              </div>
             )}
           </div>
           {/* Editor Footer */}
@@ -1167,7 +1218,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                 </button>
               )}
             </div>
-            <span>{editingFile.path}</span>
+            <span className="truncate text-right">{editingFile.path}</span>
           </div>
         </div>
       )}
