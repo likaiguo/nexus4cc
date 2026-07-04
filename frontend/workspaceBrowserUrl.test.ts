@@ -18,6 +18,8 @@ function test(name: string, fn: () => void) {
 
 const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
 const workspaceBrowserSource = fs.readFileSync('frontend/src/WorkspaceBrowser.tsx', 'utf8')
+const workspaceCodeEditorSource = fs.readFileSync('frontend/src/WorkspaceCodeEditor.tsx', 'utf8')
+const indexCssSource = fs.readFileSync('frontend/src/index.css', 'utf8')
 
 function sourceBetween(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker)
@@ -70,6 +72,67 @@ test('workspace browser reports server-normalized paths after directory loads', 
   assert.match(workspaceBrowserSource, /onPathChange\?: \(path: string\) => void/)
   assert.match(workspaceBrowserSource, /onPathChange\?\.\(data\.path\)/)
   assert.match(workspaceBrowserSource, /\}, \[token, showHidden, onPathChange\]\)/)
+})
+
+test('workspace browser uses code editor helper and component for editable files', () => {
+  assert.match(workspaceBrowserSource, /import WorkspaceCodeEditor from '\.\/WorkspaceCodeEditor'/)
+  assert.match(workspaceBrowserSource, /detectWorkspaceEditorFileType/)
+  assert.match(workspaceBrowserSource, /isWorkspaceTextFile\(name\)/)
+  assert.match(workspaceBrowserSource, /isMarkdownWorkspaceFile\(name\)/)
+  assert.match(workspaceBrowserSource, /<WorkspaceCodeEditor/)
+})
+
+test('workspace browser opens editable files in preview mode by default', () => {
+  assert.match(workspaceBrowserSource, /type EditorMode = 'preview' \| 'edit'/)
+  assert.match(workspaceBrowserSource, /const \[editorMode, setEditorMode\] = useState<EditorMode>\('preview'\)/)
+
+  const openEditorSource = sourceBetween(workspaceBrowserSource, 'async function openEditor', '  // 保存文件')
+  assert.match(openEditorSource, /mode: EditorMode = 'preview'/)
+  assert.match(openEditorSource, /setEditorMode\(mode\)/)
+
+  const doubleClickSource = sourceBetween(workspaceBrowserSource, 'function handleDoubleClick', '  // 判断是否为文本文件')
+  assert.match(doubleClickSource, /viewFile\(entry\.name\)/)
+})
+
+test('workspace browser routes text view actions to highlighted preview and keeps unsupported files direct', () => {
+  const viewFileSource = sourceBetween(workspaceBrowserSource, 'function viewFile', '  // 下载文件')
+  assert.match(viewFileSource, /if \(isTextFile\(name\)\)/)
+  assert.match(viewFileSource, /openEditor\(name, 'preview'\)/)
+  assert.match(viewFileSource, /openFile\(name\)/)
+
+  assert.match(workspaceBrowserSource, /onClick=\{\(\) => viewFile\(selectedEntry\.name\)\}/)
+  assert.match(workspaceBrowserSource, /onClick=\{\(\) => \{ viewFile\(contextMenu\.entry\.name\); setContextMenu\(null\) \}\}/)
+})
+
+test('workspace browser shows save only in edit mode and reuses CodeMirror for read-only code preview', () => {
+  const editorOverlaySource = sourceBetween(workspaceBrowserSource, '      {/* 文件编辑器 */}', 'function getFileIcon')
+  assert.match(editorOverlaySource, /!\s*isEditorPreviewMode && \(/)
+  assert.match(editorOverlaySource, /onClick=\{saveFile\}/)
+  assert.match(editorOverlaySource, /setEditorMode\(isEditorPreviewMode \? 'edit' : 'preview'\)/)
+  assert.match(editorOverlaySource, /readOnly=\{isEditorPreviewMode\}/)
+  assert.match(editorOverlaySource, /onChange=\{isEditorPreviewMode \? undefined : \(value\) =>/)
+  assert.match(editorOverlaySource, /isEditorMarkdownPreview \?/)
+})
+
+test('workspace editor surfaces are scrollable and preserve normal one-finger touch scrolling', () => {
+  const editorOverlaySource = sourceBetween(workspaceBrowserSource, '      {/* 文件编辑器 */}', 'function getFileIcon')
+  assert.doesNotMatch(editorOverlaySource, /touch-none/)
+  assert.match(editorOverlaySource, /className="workspace-code-editor w-full h-full bg-nexus-bg-2 border border-nexus-border rounded overflow-auto"/)
+  assert.match(editorOverlaySource, /className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-auto"/)
+
+  assert.match(workspaceCodeEditorSource, /readOnly \? \[EditorState\.readOnly\.of\(true\)\] : \[\]/)
+  assert.match(workspaceCodeEditorSource, /lineWrapping \? \[EditorView\.lineWrapping\] : \[\]/)
+  assert.match(workspaceCodeEditorSource, /overflow: 'auto'/)
+  assert.match(workspaceCodeEditorSource, /minWidth: lineWrapping \? '100%' : 'max-content'/)
+  assert.match(indexCssSource, /\.workspace-code-editor \.cm-scroller\s*\{\s*overflow: auto !important;/)
+  assert.match(indexCssSource, /\.workspace-code-editor \.cm-content\s*\{\s*min-width: max-content;/)
+})
+
+test('workspace browser saves with file metadata and keeps editor open on save errors', () => {
+  const saveSource = sourceBetween(workspaceBrowserSource, 'async function saveFile()', '  // 双击处理')
+  assert.match(saveSource, /mtimeMs: editingFile\.mtimeMs/)
+  assert.match(saveSource, /setEditorError\(e\.message \|\| 'Failed to save file'\)/)
+  assert.doesNotMatch(saveSource, /setError\(e\.message \|\| 'Failed to save file'\)/)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -72,3 +72,20 @@
   width: 100% !important;
   overflow: hidden !important;
 }
+
+.workspace-code-editor,
+.workspace-code-editor .cm-editor {
+  height: 100%;
+}
+
+.workspace-code-editor .cm-editor {
+  border-radius: 0.25rem;
+}
+
+.workspace-code-editor .cm-scroller {
+  overflow: auto !important;
+}
+
+.workspace-code-editor .cm-content {
+  min-width: max-content;
+}

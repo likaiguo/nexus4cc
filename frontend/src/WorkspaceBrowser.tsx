@@ -3,6 +3,13 @@ import { useTranslation } from 'react-i18next'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { Icon } from './icons'
+import WorkspaceCodeEditor from './WorkspaceCodeEditor'
+import {
+  detectWorkspaceEditorFileType,
+  isMarkdownWorkspaceFile,
+  isWorkspaceTextFile,
+  type WorkspaceEditorLanguage,
+} from './workspaceEditor'
 
 interface FileEntry {
   name: string
@@ -22,6 +29,16 @@ interface Props {
   onEditingChange?: (editing: boolean) => void
   onPathChange?: (path: string) => void
 }
+
+interface EditingFileState {
+  name: string
+  path: string
+  language: WorkspaceEditorLanguage
+  mtimeMs?: number
+  size?: number
+}
+
+type EditorMode = 'preview' | 'edit'
 
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return ''
@@ -323,10 +340,11 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   const [isCreating, setIsCreating] = useState(false)
 
   // 文件编辑器状态
-  const [editingFile, setEditingFile] = useState<{ name: string; path: string; content: string } | null>(null)
+  const [editingFile, setEditingFile] = useState<EditingFileState | null>(null)
   const [editorContent, setEditorContent] = useState('')
+  const [editorError, setEditorError] = useState('')
   const [isSaving, setIsSaving] = useState(false)
-  const [isPreviewMode, setIsPreviewMode] = useState(false)
+  const [editorMode, setEditorMode] = useState<EditorMode>('preview')
 
   // 编辑器字体大小（双指缩放调整）
   const [editorFontSize, setEditorFontSize] = useState(14) // 基础 14px
@@ -618,6 +636,14 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     document.body.removeChild(a)
   }
 
+  function viewFile(name: string) {
+    if (isTextFile(name)) {
+      openEditor(name, 'preview')
+      return
+    }
+    openFile(name)
+  }
+
   // 下载文件
   function downloadFile(name: string) {
     const url = getFileUrl(name)
@@ -680,8 +706,8 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     }
   }
 
-  // 打开文件编辑器（文本文件→编辑器；二进制文件→浏览器原生打开）
-  async function openEditor(name: string) {
+  // 打开文件编辑器
+  async function openEditor(name: string, mode: EditorMode = 'preview') {
     if (!currentPath) return
     // 前端预检：已知二进制后缀直接走浏览器原生打开
     if (!isTextFile(name)) {
@@ -701,12 +727,21 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
           alert(t('workspace.fileTooLarge'))
           return
         }
-        throw new Error('Failed to load file')
+        const data = await r.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to load file')
       }
       const data = await r.json()
-      setEditingFile({ name, path: filePath, content: data.content })
+      const fileType = detectWorkspaceEditorFileType(name)
+      setEditingFile({
+        name,
+        path: filePath,
+        language: fileType.language,
+        mtimeMs: typeof data.mtimeMs === 'number' ? data.mtimeMs : undefined,
+        size: typeof data.size === 'number' ? data.size : undefined,
+      })
       setEditorContent(data.content)
-      setIsPreviewMode(true)
+      setEditorError('')
+      setEditorMode(mode)
       setShowToc(false)
       setTocExpandedIds(new Set())
     } catch (e: any) {
@@ -722,13 +757,17 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
       const r = await fetch('/api/workspace/file', {
         method: 'PUT',
         headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: editingFile.path, content: editorContent }),
+        body: JSON.stringify({ path: editingFile.path, content: editorContent, mtimeMs: editingFile.mtimeMs }),
       })
-      if (!r.ok) throw new Error('Failed to save file')
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to save file')
+      }
       setEditingFile(null)
       setEditorContent('')
+      setEditorError('')
     } catch (e: any) {
-      setError(e.message || 'Failed to save file')
+      setEditorError(e.message || 'Failed to save file')
     } finally {
       setIsSaving(false)
     }
@@ -765,8 +804,8 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   }
 
   function navigateToHeading(id: string) {
-    if (!isPreviewMode) {
-      setIsPreviewMode(true)
+    if (editorMode !== 'preview') {
+      setEditorMode('preview')
       pendingScrollId.current = id
     } else {
       scrollToHeading(id)
@@ -775,14 +814,14 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
 
   // Scroll to pending heading after preview mode renders
   useEffect(() => {
-    if (isPreviewMode && pendingScrollId.current) {
+    if (editorMode === 'preview' && pendingScrollId.current) {
       const id = pendingScrollId.current
       pendingScrollId.current = null
       requestAnimationFrame(() => {
         document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       })
     }
-  }, [isPreviewMode, editorContent])
+  }, [editorMode, editorContent])
 
   // Notify parent when editor opens/closes (for embedded mode layout)
   useEffect(() => {
@@ -805,45 +844,18 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     if (entry.type === 'dir') {
       navigateTo(entry.name)
     } else {
-      openEditor(entry.name)
+      viewFile(entry.name)
     }
   }
 
   // 判断文件是否可在编辑器中打开（排除已知二进制类型，其余都尝试）
   function isTextFile(name: string): boolean {
-    const lower = name.toLowerCase()
-    const dotIdx = lower.lastIndexOf('.')
-    if (dotIdx <= 0) return true // 无后缀文件尝试打开，server 做最终判断
-    const ext = lower.slice(dotIdx + 1)
-    // Known binary (non-text) extensions — anything NOT in this list is treated as text
-    const binaryExts = new Set([
-      // Images
-      'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tiff', 'tif', 'heic', 'heif', 'avif',
-      // Video / Audio
-      'mp4', 'webm', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'm4v', 'mpg', 'mpeg',
-      'mp3', 'wav', 'ogg', 'flac', 'aac', 'wma', 'm4a', 'opus',
-      // Archives
-      'zip', 'tar', 'gz', 'bz2', 'xz', '7z', 'rar', 'zst', 'lz4',
-      // Binaries / executables
-      'exe', 'dll', 'so', 'dylib', 'o', 'a', 'wasm', 'bin', 'dat',
-      // Documents (binary formats)
-      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'epub',
-      // Fonts
-      'ttf', 'otf', 'woff', 'woff2', 'eot',
-      // Other binary
-      'class', 'jar', 'war', 'pyc', 'pyo', 'elc',
-      'db', 'sqlite', 'sqlite3',
-      'psd', 'ai',
-      'iso', 'dmg',
-      'dex', 'apk', 'ipa',
-    ])
-    return !binaryExts.has(ext)
+    return isWorkspaceTextFile(name)
   }
 
   // 判断是否为 Markdown 文件
   function isMarkdownFile(name: string): boolean {
-    const ext = name.split('.').pop()?.toLowerCase() || ''
-    return ext === 'md' || ext === 'markdown'
+    return isMarkdownWorkspaceFile(name)
   }
 
   // 双指缩放：计算两点间距离
@@ -925,6 +937,12 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     return [...dirs.sort(cmpFn), ...files.sort(cmpFn)]
   }, [entries, sortKey, sortAsc])
 
+  // 获取当前选中的文件条目
+  const selectedEntry = selectedName && selectedName !== '..'
+    ? sortedEntries.find(e => e.name === selectedName)
+    : null
+  const isEditorPreviewMode = editorMode === 'preview'
+  const isEditorMarkdownPreview = editingFile !== null && isMarkdownFile(editingFile.name) && isEditorPreviewMode
   return (
     <>
     <div className={overlay
@@ -1184,6 +1202,37 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
             )}
           </div>
         </div>
+        {/* 文件操作按钮 */}
+        {selectedEntry?.type === 'file' && (
+          <div className="flex items-center gap-2">
+            {isTextFile(selectedEntry.name) && (
+              <button
+                onClick={() => openEditor(selectedEntry.name)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-bg-2 hover:bg-nexus-bg-2/80 text-nexus-text text-xs rounded border border-nexus-border transition-colors"
+                title={t('workspace.edit')}
+              >
+                <Icon name="edit" size={14} />
+                <span className="hidden sm:inline">{t('workspace.edit')}</span>
+              </button>
+            )}
+            <button
+              onClick={() => viewFile(selectedEntry.name)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-bg-2 hover:bg-nexus-bg-2/80 text-nexus-text text-xs rounded border border-nexus-border transition-colors"
+              title={t('workspace.view')}
+            >
+              <Icon name="eye" size={14} />
+              <span className="hidden sm:inline">{t('workspace.view')}</span>
+            </button>
+            <button
+              onClick={() => downloadFile(selectedEntry.name)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-xs rounded transition-colors"
+              title={t('workspace.download')}
+            >
+              <Icon name="download" size={14} />
+              <span className="hidden sm:inline">{t('workspace.download')}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 长按 / 右键菜单 */}
@@ -1216,7 +1265,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
             {contextMenu.entry.type === 'file' && (
               <>
                 <button
-                  onClick={() => { openFile(contextMenu.entry.name); setContextMenu(null) }}
+                  onClick={() => { viewFile(contextMenu.entry.name); setContextMenu(null) }}
                   className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-nexus-bg-2 transition-colors text-nexus-text"
                 >
                   <Icon name="eye" size={14} />
@@ -1499,27 +1548,27 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={saveFile}
-                disabled={isSaving}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-xs rounded transition-colors disabled:opacity-50"
-              >
-                <Icon name="save" size={14} />
-                {!compactHeader && (isSaving ? t('common.saving') : t('common.save'))}
-              </button>
-              {editingFile && (
+              {!isEditorPreviewMode && (
                 <button
-                  onClick={() => setIsPreviewMode(!isPreviewMode)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
-                    isPreviewMode
-                      ? 'bg-nexus-accent text-white border-nexus-accent'
-                      : 'bg-nexus-bg-2 text-nexus-text border-nexus-border hover:bg-nexus-bg-2/80'
-                  }`}
+                  onClick={saveFile}
+                  disabled={isSaving}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-nexus-accent hover:bg-nexus-accent/90 text-white text-xs rounded transition-colors disabled:opacity-50"
                 >
-                  <Icon name={isPreviewMode ? 'edit' : 'eye'} size={14} />
-                  {!compactHeader && (isPreviewMode ? t('workspace.edit') : t('workspace.preview'))}
+                  <Icon name="save" size={14} />
+                  {!compactHeader && (isSaving ? t('common.saving') : t('common.save'))}
                 </button>
               )}
+              <button
+                onClick={() => setEditorMode(isEditorPreviewMode ? 'edit' : 'preview')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded transition-colors border ${
+                  isEditorPreviewMode
+                    ? 'bg-nexus-bg-2 text-nexus-text border-nexus-border hover:bg-nexus-bg-2/80'
+                    : 'bg-nexus-accent text-white border-nexus-accent'
+                }`}
+              >
+                <Icon name={isEditorPreviewMode ? 'edit' : 'eye'} size={14} />
+                {!compactHeader && (isEditorPreviewMode ? t('workspace.edit') : t('workspace.preview'))}
+              </button>
               {editingFile && isMarkdownFile(editingFile.name) && (
                 <button
                   onClick={() => setShowToc(!showToc)}
@@ -1534,16 +1583,21 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
                 </button>
               )}
               <button
-                onClick={() => { setEditingFile(null); setEditorContent(''); setIsPreviewMode(false); setEditorFontSize(14); setShowToc(false); setTocExpandedIds(new Set()) }}
+                onClick={() => { setEditingFile(null); setEditorContent(''); setEditorError(''); setEditorMode('preview'); setEditorFontSize(14); setShowToc(false); setTocExpandedIds(new Set()) }}
                 className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
               >
                 <Icon name="x" size={20} />
               </button>
             </div>
           </div>
+          {editorError && (
+            <div className="px-4 py-2 bg-nexus-error/10 border-b border-nexus-error/30 text-nexus-error text-xs">
+              {editorError}
+            </div>
+          )}
           {/* Editor Content */}
           <div
-            className="flex-1 p-4 overflow-hidden touch-none"
+            className="flex-1 p-4 overflow-hidden"
             onTouchStart={handleEditorTouchStart}
             onTouchMove={handleEditorTouchMove}
             onTouchEnd={handleEditorTouchEnd}
@@ -1559,26 +1613,27 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
             }}
             onClick={overlay ? onClose : undefined}
           >
-            {editingFile && isMarkdownFile(editingFile.name) && isPreviewMode ? (
+            {isEditorMarkdownPreview ? (
               <div
-                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-y-auto"
+                className="w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-4 overflow-auto"
                 style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
               >
                 <MarkdownPreview content={editorContent} fontSize={editorFontSize} />
               </div>
             ) : (
-              <textarea
-                value={editorContent}
-                onChange={(e) => setEditorContent(e.target.value)}
-                readOnly={isPreviewMode}
-                className={`w-full h-full bg-nexus-bg-2 border border-nexus-border rounded p-3 font-mono resize-none focus:outline-none focus:border-nexus-accent ${
-                  isPreviewMode
-                    ? 'text-nexus-text cursor-default'
-                    : 'text-nexus-text'
-                }`}
-                style={{ fontSize: `${editorFontSize}px`, lineHeight: '1.6' }}
-                spellCheck={false}
-              />
+              <div className="workspace-code-editor w-full h-full bg-nexus-bg-2 border border-nexus-border rounded overflow-auto">
+                <WorkspaceCodeEditor
+                  value={editorContent}
+                  language={editingFile.language}
+                  fontSize={editorFontSize}
+                  readOnly={isEditorPreviewMode}
+                  lineWrapping={false}
+                  onChange={isEditorPreviewMode ? undefined : (value) => {
+                    setEditorContent(value)
+                    if (editorError) setEditorError('')
+                  }}
+                />
+              </div>
             )}
           </div>
           {/* Editor Footer */}
@@ -1594,7 +1649,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
                 </button>
               )}
             </div>
-            <span>{editingFile.path}</span>
+            <span className="truncate text-right">{editingFile.path}</span>
           </div>
 
           {/* TOC Panel */}

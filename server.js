@@ -16,6 +16,7 @@ import { createPasswordManager, loadEnvFile } from './authPassword.js';
 import { copyMissingLegacyData, resolveNexusDataDir } from './dataDir.js';
 import { buildLauncherCommand, collectProxyVars, inferLauncher } from './launcher.js';
 import { buildSessionArchiveInput, plainTerminalText } from './sessionArchive.js';
+import { WorkspaceFileError, readEditableWorkspaceFile, saveEditableWorkspaceFile } from './workspaceFiles.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = join(__dirname, '.env');
@@ -891,32 +892,11 @@ const MAX_EDITOR_FILE_SIZE = 5 * 1024 * 1024 // 5MB hard limit for text editor
 // GET /api/workspace/file — 读取文件内容（自动检测二进制，仅文本文件可读）
 app.get('/api/workspace/file', authMiddleware, (req, res) => {
   try {
-    let p = req.query.path || ''
-    if (!isAbsolute(p)) p = join(WORKSPACE_ROOT, p)
-    p = normalize(p)
-    if (p.includes('..')) {
-      return res.status(403).json({ error: 'invalid path' })
-    }
-    if (!existsSync(p) || !statSync(p).isFile()) {
-      return res.status(404).json({ error: 'not found' })
-    }
-    // Fast pre-filter: known binary extension → reject immediately
-    if (isKnownBinaryExt(p)) {
-      return res.status(415).json({ error: 'binary file, cannot open in editor' })
-    }
-    // Reject files that are too large for the editor
-    const st = statSync(p)
-    if (st.size > MAX_EDITOR_FILE_SIZE) {
-      return res.status(413).json({ error: 'file too large for editor', size: st.size, max: MAX_EDITOR_FILE_SIZE })
-    }
-    // Read as buffer first to detect binary content via null bytes
-    const buf = readFileSync(p)
-    if (isBinaryContent(buf)) {
-      return res.status(415).json({ error: 'binary file detected' })
-    }
-    const content = buf.toString('utf8')
-    res.json({ path: p, content })
+    res.json(readEditableWorkspaceFile(req.query.path || '', WORKSPACE_ROOT))
   } catch (err) {
+    if (err instanceof WorkspaceFileError) {
+      return res.status(err.status).json({ error: err.message, code: err.code })
+    }
     res.status(500).json({ error: err.message })
   }
 })
@@ -924,20 +904,12 @@ app.get('/api/workspace/file', authMiddleware, (req, res) => {
 // PUT /api/workspace/file — 保存文件内容（自动检测二进制，仅文本文件可写）
 app.put('/api/workspace/file', authMiddleware, (req, res) => {
   try {
-    let { path: filePath, content = '' } = req.body
-    if (!filePath) return res.status(400).json({ error: 'path required' })
-    if (!isAbsolute(filePath)) filePath = join(WORKSPACE_ROOT, filePath)
-    filePath = normalize(filePath)
-    if (filePath.includes('..')) {
-      return res.status(403).json({ error: 'invalid path' })
-    }
-    // Fast pre-filter: known binary extension → reject
-    if (isKnownBinaryExt(filePath)) {
-      return res.status(415).json({ error: 'binary file, cannot save via editor' })
-    }
-    writeFileSync(filePath, content, 'utf8')
-    res.json({ ok: true, path: filePath })
+    const { path: filePath, content = '', mtimeMs } = req.body || {}
+    res.json(saveEditableWorkspaceFile({ path: filePath, workspaceRoot: WORKSPACE_ROOT, content, mtimeMs }))
   } catch (err) {
+    if (err instanceof WorkspaceFileError) {
+      return res.status(err.status).json({ error: err.message, code: err.code })
+    }
     res.status(500).json({ error: err.message })
   }
 })
