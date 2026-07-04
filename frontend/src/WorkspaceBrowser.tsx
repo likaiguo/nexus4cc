@@ -36,6 +36,11 @@ interface EditingFileState {
 
 type EditorMode = 'preview' | 'edit'
 
+const EDITOR_FONT_SIZE_DEFAULT = 14
+const EDITOR_FONT_SIZE_MIN = 8
+const EDITOR_FONT_SIZE_MAX = 32
+const EDITOR_FONT_SIZE_STEP = 2
+
 function formatSize(bytes?: number): string {
   if (bytes === undefined) return ''
   if (bytes < 1024) return `${bytes}B`
@@ -46,6 +51,11 @@ function formatSize(bytes?: number): string {
 function formatTime(ts: number): string {
   const d = new Date(ts)
   return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+}
+
+function clampEditorFontSize(size: number): number {
+  if (!Number.isFinite(size)) return EDITOR_FONT_SIZE_DEFAULT
+  return Math.max(EDITOR_FONT_SIZE_MIN, Math.min(EDITOR_FONT_SIZE_MAX, size))
 }
 
 export default function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, onPathChange }: Props) {
@@ -122,9 +132,9 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
   const [editorMode, setEditorMode] = useState<EditorMode>('preview')
 
   // 编辑器字体大小（双指缩放调整）
-  const [editorFontSize, setEditorFontSize] = useState(14) // 基础 14px
+  const [editorFontSize, setEditorFontSize] = useState(EDITOR_FONT_SIZE_DEFAULT)
   const [pinchStartDist, setPinchStartDist] = useState(0)
-  const [pinchStartFontSize, setPinchStartFontSize] = useState(14)
+  const [pinchStartFontSize, setPinchStartFontSize] = useState(EDITOR_FONT_SIZE_DEFAULT)
 
   // 长按 / 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null)
@@ -537,9 +547,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
       e.preventDefault()
       const currentDist = getPinchDistance(e.touches)
       const ratio = currentDist / pinchStartDist
-      // 字体范围 8px - 32px，按 sqrt 曲线让手感更自然
-      const newSize = Math.max(8, Math.min(32, Math.round(pinchStartFontSize * Math.sqrt(ratio))))
-      setEditorFontSize(newSize)
+      setEditorFontSize(clampEditorFontSize(Math.round(pinchStartFontSize * Math.sqrt(ratio))))
     }
   }
 
@@ -550,7 +558,11 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
 
   // 重置字体大小
   function resetEditorFontSize() {
-    setEditorFontSize(14)
+    setEditorFontSize(EDITOR_FONT_SIZE_DEFAULT)
+  }
+
+  function changeEditorFontSize(delta: number) {
+    setEditorFontSize(size => clampEditorFontSize(size + delta))
   }
 
   // 构建面包屑路径（使用绝对路径）
@@ -1196,6 +1208,7 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
                   language={editingFile.language}
                   fontSize={editorFontSize}
                   readOnly={isEditorPreviewMode}
+                  editable={!isEditorPreviewMode}
                   lineWrapping={false}
                   onChange={isEditorPreviewMode ? undefined : (value) => {
                     setEditorContent(value)
@@ -1207,18 +1220,41 @@ export default function WorkspaceBrowser({ token, onClose, initialPath = '', cur
           </div>
           {/* Editor Footer */}
           <div className="px-4 py-2 border-t border-nexus-border flex items-center justify-between text-xs text-nexus-muted">
-            <div className="flex items-center gap-3">
-              <span>{editorContent.length} {t('workspace.chars')}</span>
-              {editorFontSize !== 14 && (
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="shrink-0">{editorContent.length} {t('workspace.chars')}</span>
+              <div className="flex items-center gap-1 shrink-0" aria-label="Editor font size controls">
+                <button
+                  type="button"
+                  onClick={() => changeEditorFontSize(-EDITOR_FONT_SIZE_STEP)}
+                  disabled={editorFontSize <= EDITOR_FONT_SIZE_MIN}
+                  className="w-7 h-7 flex items-center justify-center rounded border border-nexus-border text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
+                  title="Zoom out"
+                  aria-label="Zoom out"
+                >
+                  <span className="text-base leading-none">-</span>
+                </button>
                 <button
                   onClick={resetEditorFontSize}
-                  className="text-nexus-accent hover:underline"
+                  className="h-7 min-w-[42px] px-2 rounded border border-nexus-border text-nexus-text-2 hover:bg-nexus-bg-2 disabled:opacity-60"
+                  disabled={editorFontSize === EDITOR_FONT_SIZE_DEFAULT}
+                  title="Reset font size"
+                  aria-label="Reset font size"
                 >
                   {editorFontSize}px
                 </button>
-              )}
+                <button
+                  type="button"
+                  onClick={() => changeEditorFontSize(EDITOR_FONT_SIZE_STEP)}
+                  disabled={editorFontSize >= EDITOR_FONT_SIZE_MAX}
+                  className="w-7 h-7 flex items-center justify-center rounded border border-nexus-border text-nexus-text-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-nexus-bg-2"
+                  title="Zoom in"
+                  aria-label="Zoom in"
+                >
+                  <Icon name="plus" size={14} />
+                </button>
+              </div>
             </div>
-            <span className="truncate text-right">{editingFile.path}</span>
+            <span className="truncate text-right min-w-0">{editingFile.path}</span>
           </div>
         </div>
       )}

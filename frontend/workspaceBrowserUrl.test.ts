@@ -110,8 +110,13 @@ test('workspace browser shows save only in edit mode and reuses CodeMirror for r
   assert.match(editorOverlaySource, /onClick=\{saveFile\}/)
   assert.match(editorOverlaySource, /setEditorMode\(isEditorPreviewMode \? 'edit' : 'preview'\)/)
   assert.match(editorOverlaySource, /readOnly=\{isEditorPreviewMode\}/)
+  assert.match(editorOverlaySource, /editable=\{!isEditorPreviewMode\}/)
   assert.match(editorOverlaySource, /onChange=\{isEditorPreviewMode \? undefined : \(value\) =>/)
   assert.match(editorOverlaySource, /isEditorMarkdownPreview \?/)
+  assert.match(workspaceCodeEditorSource, /editable\?: boolean/)
+  assert.match(workspaceCodeEditorSource, /editable = true/)
+  assert.match(workspaceCodeEditorSource, /editable=\{editable\}/)
+  assert.match(workspaceCodeEditorSource, /readOnly=\{readOnly\}/)
 })
 
 test('workspace editor surfaces are scrollable and preserve normal one-finger touch scrolling', () => {
@@ -126,6 +131,26 @@ test('workspace editor surfaces are scrollable and preserve normal one-finger to
   assert.match(workspaceCodeEditorSource, /minWidth: lineWrapping \? '100%' : 'max-content'/)
   assert.match(indexCssSource, /\.workspace-code-editor \.cm-scroller\s*\{\s*overflow: auto !important;/)
   assert.match(indexCssSource, /\.workspace-code-editor \.cm-content\s*\{\s*min-width: max-content;/)
+})
+
+test('workspace browser provides bounded zoom controls and pinch zoom through shared font sizing', () => {
+  assert.match(workspaceBrowserSource, /const EDITOR_FONT_SIZE_DEFAULT = 14/)
+  assert.match(workspaceBrowserSource, /const EDITOR_FONT_SIZE_MIN = 8/)
+  assert.match(workspaceBrowserSource, /const EDITOR_FONT_SIZE_MAX = 32/)
+  assert.match(workspaceBrowserSource, /const EDITOR_FONT_SIZE_STEP = 2/)
+  assert.match(workspaceBrowserSource, /function clampEditorFontSize\(size: number\): number/)
+  assert.match(workspaceBrowserSource, /setEditorFontSize\(clampEditorFontSize\(Math\.round\(pinchStartFontSize \* Math\.sqrt\(ratio\)\)\)\)/)
+  assert.match(workspaceBrowserSource, /setEditorFontSize\(size => clampEditorFontSize\(size \+ delta\)\)/)
+
+  const editorOverlaySource = sourceBetween(workspaceBrowserSource, '      {/* 文件编辑器 */}', 'function getFileIcon')
+  assert.match(editorOverlaySource, /aria-label="Editor font size controls"/)
+  assert.match(editorOverlaySource, /aria-label="Zoom out"/)
+  assert.match(editorOverlaySource, /aria-label="Reset font size"/)
+  assert.match(editorOverlaySource, /aria-label="Zoom in"/)
+  assert.match(editorOverlaySource, /changeEditorFontSize\(-EDITOR_FONT_SIZE_STEP\)/)
+  assert.match(editorOverlaySource, /changeEditorFontSize\(EDITOR_FONT_SIZE_STEP\)/)
+  assert.match(editorOverlaySource, /disabled=\{editorFontSize <= EDITOR_FONT_SIZE_MIN\}/)
+  assert.match(editorOverlaySource, /disabled=\{editorFontSize >= EDITOR_FONT_SIZE_MAX\}/)
 })
 
 test('workspace browser saves with file metadata and keeps editor open on save errors', () => {
