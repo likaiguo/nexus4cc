@@ -10,6 +10,12 @@ The web client SHALL provide a syntax-highlighted in-app preview and editor for 
 - **WHEN** the user opens a supported text file from the workspace browser edit, view, double-click, or context-menu action
 - **THEN** the file SHALL open in an in-app editor overlay in preview mode by default
 - **AND** the preview SHALL display the file content with syntax highlighting for the detected language
+- **AND** the preview SHALL use a non-editable editor DOM so mobile devices do not summon the software keyboard while reading
+
+#### Scenario: Switch supported source file to edit mode
+- **WHEN** the user switches a supported text file from preview mode to edit mode
+- **THEN** the editor SHALL use an editable editor DOM
+- **AND** text input and save controls SHALL be available only in edit mode
 
 #### Scenario: Supported language set
 - **WHEN** a workspace file has an extension or filename for SQL, Python, JavaScript, TypeScript, Markdown, JSON, HTML, CSS, shell script, environment/config text, or plain text
@@ -91,3 +97,14 @@ The workspace code preview/editor SHALL allow users to inspect wide and long tex
 #### Scenario: Preserve text selection in preview
 - **WHEN** the user selects text inside a highlighted preview
 - **THEN** the preview SHALL allow text selection and copying without entering edit mode
+- **AND** selecting preview text SHALL NOT require an editable input surface
+
+#### Scenario: Zoom with explicit controls
+- **WHEN** the user opens a Markdown preview, code preview, or code editor
+- **THEN** the overlay SHALL provide visible controls to decrease, reset, and increase the editor font size
+- **AND** those controls SHALL keep font size within the supported range
+
+#### Scenario: Zoom with pinch gesture
+- **WHEN** the user performs a two-finger pinch gesture inside a Markdown preview, code preview, or code editor surface
+- **THEN** the overlay SHALL adjust the editor font size within the supported range
+- **AND** one-finger scrolling and horizontal code scrolling SHALL remain available

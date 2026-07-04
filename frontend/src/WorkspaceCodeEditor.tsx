@@ -10,10 +10,11 @@ interface Props {
   fontSize: number
   onChange?: (value: string) => void
   readOnly?: boolean
+  editable?: boolean
   lineWrapping?: boolean
 }
 
-export default function WorkspaceCodeEditor({ value, language, fontSize, onChange, readOnly = false, lineWrapping = false }: Props) {
+export default function WorkspaceCodeEditor({ value, language, fontSize, onChange, readOnly = false, editable = true, lineWrapping = false }: Props) {
   const extensions = [
     ...workspaceLanguageExtension(language),
     ...(readOnly ? [EditorState.readOnly.of(true)] : []),
@@ -68,6 +69,8 @@ export default function WorkspaceCodeEditor({ value, language, fontSize, onChang
         searchKeymap: true,
       }}
       extensions={extensions}
+      editable={editable}
+      readOnly={readOnly}
       onChange={onChange}
     />
   )
