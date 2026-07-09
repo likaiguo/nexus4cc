@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import { useAuthFetch } from './AuthSessionProvider'
 
 // 检测是否为 PC 端（>= 768px）
 function useIsDesktop() {
@@ -48,6 +49,7 @@ const EMPTY_CONFIG: Omit<Config, 'id'> = {
 
 export default function SessionManager({ token, onClose }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const isDesktop = useIsDesktop()
 
   const [configs, setConfigs] = useState<Config[]>([])
@@ -61,7 +63,7 @@ export default function SessionManager({ token, onClose }: Props) {
   async function fetchConfigs() {
     setLoadingCfg(true)
     try {
-      const r = await fetch('/api/configs', { headers })
+      const r = await authFetch('/api/configs', { headers })
       setConfigs(r.ok ? await r.json() : [])
     } catch { setConfigs([]) }
     finally { setLoadingCfg(false) }
@@ -75,7 +77,7 @@ export default function SessionManager({ token, onClose }: Props) {
     if (!id.trim() || !data.label.trim()) { setCfgError('ID 和名称不能为空'); return }
     setSavingCfg(true); setCfgError(null)
     try {
-      const r = await fetch(`/api/configs/${id.trim()}`, {
+      const r = await authFetch(`/api/configs/${id.trim()}`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -90,7 +92,7 @@ export default function SessionManager({ token, onClose }: Props) {
 
   async function deleteConfig(id: string) {
     try {
-      await fetch(`/api/configs/${id}`, { method: 'DELETE', headers })
+      await authFetch(`/api/configs/${id}`, { method: 'DELETE', headers })
       await fetchConfigs()
     } catch { /* ignore */ }
   }

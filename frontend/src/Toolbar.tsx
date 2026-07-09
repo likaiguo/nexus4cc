@@ -8,6 +8,7 @@ import type { Terminal } from '@xterm/xterm'
 import { KeyDef, ToolbarConfig, ALL_KEYS, FACTORY_CONFIG } from './toolbarDefaults'
 import { TOOLBAR_PRESETS, appendCustomKeyToSection, applyRecommendation, mergePresetWithCustom, toolbarDeviceType, type ShortcutRecommendation, type ToolbarDeviceType } from './toolbarPresets'
 import type { ThemeMode } from './Terminal'
+import { useAuthFetch } from './AuthSessionProvider'
 
 interface Props {
   token: string
@@ -134,6 +135,7 @@ const ITEM_HEIGHT = 48 // px，每行编辑项高度
 
 export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _termRef, themeMode, onToggleTheme, onOpenSettings, onUploadFile, onUploadFiles, onOpenFiles, onOpenWorkspace, onOpenQuickPhrases, onOpenSessionArchives, onFitTerminal, onOpenTerminalHistory, onShowCopySheet, composerControls, attentionEntry, locationShare, embedded, collapsed: controlledCollapsed, onCollapsedChange }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const [config, setConfig]           = useState<ToolbarConfig>(loadConfig)
   const [deviceType, setDeviceType] = useState<ToolbarDeviceType>(() => toolbarDeviceType(window.innerWidth))
   const [recommendations, setRecommendations] = useState<ShortcutRecommendation[]>([])
@@ -200,7 +202,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
       const cached = localStorage.getItem(configKeyFor(deviceType))
       if (cached) setConfig(JSON.parse(cached))
     } catch {}
-    fetch(`/api/toolbar-config?device_type=${deviceType}`, { headers: { Authorization: `Bearer ${token}` } })
+    authFetch(`/api/toolbar-config?device_type=${deviceType}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data && data.pinned && data.expanded) {
@@ -210,11 +212,11 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
         }
       })
     .catch(() => {})
-    fetch(`/api/toolbar-layouts?device_type=${deviceType}`, { headers: { Authorization: `Bearer ${token}` } })
+    authFetch(`/api/toolbar-layouts?device_type=${deviceType}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (Array.isArray(data?.recommendations)) setRecommendations(data.recommendations) })
       .catch(() => {})
-  }, [token, deviceType])
+  }, [authFetch, token, deviceType])
 
   // 根元素：阻止 touchstart 默认行为，防止键盘弹出。
   // 但滚动区及其子元素（含拖拽手柄）跳过 preventDefault，
@@ -265,12 +267,12 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   function saveConfig(c: ToolbarConfig) {
     localStorage.setItem(configKeyFor(deviceType), JSON.stringify(c))
     localStorage.setItem(CONFIG_KEY, JSON.stringify(c))
-    fetch('/api/toolbar-config', {
+    authFetch('/api/toolbar-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(c),
     }).catch(() => {})
-    fetch('/api/toolbar-layouts', {
+    authFetch('/api/toolbar-layouts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ device_type: deviceType, name: 'Custom layout', config: c }),
@@ -280,7 +282,7 @@ export default function Toolbar({ token, sendToWs, scrollToBottom, termRef: _ter
   function updateConfig(next: ToolbarConfig) { setConfig(next); saveConfig(next) }
 
   function reportShortcutUsage(key: KeyDef) {
-    fetch('/api/shortcut-usage', {
+    authFetch('/api/shortcut-usage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ key_id: key.id, device_type: deviceType }),

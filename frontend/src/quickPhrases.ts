@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useAuthFetch } from './AuthSessionProvider'
 
 export interface QuickPhrase {
   id: string
@@ -19,6 +20,7 @@ export type QuickPhraseInput = {
 }
 
 export function useQuickPhrases(token: string) {
+  const authFetch = useAuthFetch()
   const [phrases, setPhrases] = useState<QuickPhrase[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -33,7 +35,7 @@ export function useQuickPhrases(token: string) {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/quick-phrases', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await authFetch('/api/quick-phrases', { headers: { Authorization: `Bearer ${token}` } })
       if (!res.ok) throw new Error(await responseError(res))
       setPhrases(await res.json())
     } catch (err) {
@@ -41,7 +43,7 @@ export function useQuickPhrases(token: string) {
     } finally {
       setLoading(false)
     }
-  }, [token])
+  }, [authFetch, token])
 
   useEffect(() => {
     fetchPhrases()
@@ -51,7 +53,7 @@ export function useQuickPhrases(token: string) {
     setSaving(true)
     setError('')
     try {
-      const res = await fetch(id ? `/api/quick-phrases/${encodeURIComponent(id)}` : '/api/quick-phrases', {
+      const res = await authFetch(id ? `/api/quick-phrases/${encodeURIComponent(id)}` : '/api/quick-phrases', {
         method: id ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(input),
@@ -69,13 +71,13 @@ export function useQuickPhrases(token: string) {
     } finally {
       setSaving(false)
     }
-  }, [token])
+  }, [authFetch, token])
 
   const deletePhrase = useCallback(async (phrase: QuickPhrase, editingId: string | null) => {
     setSaving(true)
     setError('')
     try {
-      const res = await fetch(`/api/quick-phrases/${encodeURIComponent(phrase.id)}`, {
+      const res = await authFetch(`/api/quick-phrases/${encodeURIComponent(phrase.id)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -88,7 +90,7 @@ export function useQuickPhrases(token: string) {
     } finally {
       setSaving(false)
     }
-  }, [token])
+  }, [authFetch, token])
 
   const movePhrase = useCallback(async (phrase: QuickPhrase, direction: -1 | 1) => {
     const index = sortedPhrases.findIndex(item => item.id === phrase.id)
@@ -102,7 +104,7 @@ export function useQuickPhrases(token: string) {
     setSaving(true)
     setError('')
     try {
-      const res = await fetch('/api/quick-phrases/order', {
+      const res = await authFetch('/api/quick-phrases/order', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ order: optimistic.map(entry => entry.id) }),
@@ -116,11 +118,11 @@ export function useQuickPhrases(token: string) {
     } finally {
       setSaving(false)
     }
-  }, [fetchPhrases, sortedPhrases, token])
+  }, [authFetch, fetchPhrases, sortedPhrases, token])
 
   const recordPhraseUse = useCallback(async (id: string) => {
     try {
-      await fetch(`/api/quick-phrases/${encodeURIComponent(id)}/use`, {
+      await authFetch(`/api/quick-phrases/${encodeURIComponent(id)}/use`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -128,7 +130,7 @@ export function useQuickPhrases(token: string) {
       const message = err instanceof Error ? err.message : String(err)
       console.warn(`[Nexus] Failed to record quick phrase usage: ${message}`)
     }
-  }, [token])
+  }, [authFetch, token])
 
   return {
     deletePhrase,

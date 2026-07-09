@@ -29,7 +29,9 @@
     "showPassword": "Show password",
     "hidePassword": "Hide password",
     "wrongPassword": "Wrong password",
-    "connectionFailed": "Connection failed"
+    "connectionFailed": "Connection failed",
+    "checkingSession": "Checking login session...",
+    "savedSessionConnectionFailed": "Backend is unreachable. Your login state is preserved."
   },
   "workspace": {
     "title": "Select Workspace",

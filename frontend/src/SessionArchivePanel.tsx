@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon } from './icons'
+import { useAuthFetch } from './AuthSessionProvider'
 
 interface ArchiveSummary {
   readonly id: string
@@ -73,6 +74,7 @@ function formatBytes(value: number): string {
 }
 
 export default function SessionArchivePanel({ token, currentProject, currentChannelIndex, onClose, onRestored }: Props) {
+  const authFetch = useAuthFetch()
   const [archives, setArchives] = useState<ArchiveSummary[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [detail, setDetail] = useState<ArchiveDetail | null>(null)
@@ -93,7 +95,7 @@ export default function SessionArchivePanel({ token, currentProject, currentChan
     try {
       const params = new URLSearchParams({ limit: '200' })
       if (projectOnly && currentProject) params.set('project', currentProject)
-      const response = await fetch(`/api/session-archives?${params}`, {
+      const response = await authFetch(`/api/session-archives?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!response.ok) throw new Error(`archive list failed: ${response.status}`)
@@ -106,7 +108,7 @@ export default function SessionArchivePanel({ token, currentProject, currentChan
     } finally {
       setLoading(false)
     }
-  }, [currentProject, projectOnly, token])
+  }, [authFetch, currentProject, projectOnly, token])
 
   useEffect(() => {
     loadArchives()
@@ -120,7 +122,7 @@ export default function SessionArchivePanel({ token, currentProject, currentChan
     let cancelled = false
     setDetailLoading(true)
     setError('')
-    fetch(`/api/session-archives/${encodeURIComponent(selected.id)}`, {
+    authFetch(`/api/session-archives/${encodeURIComponent(selected.id)}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(response => {
@@ -139,13 +141,13 @@ export default function SessionArchivePanel({ token, currentProject, currentChan
     return () => {
       cancelled = true
     }
-  }, [selected?.id, token])
+  }, [authFetch, selected?.id, token])
 
   async function snapshotCurrent() {
     setBusy(true)
     setError('')
     try {
-      const response = await fetch('/api/session-archives/snapshot', {
+      const response = await authFetch('/api/session-archives/snapshot', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ session: currentProject, index: currentChannelIndex }),
@@ -167,7 +169,7 @@ export default function SessionArchivePanel({ token, currentProject, currentChan
     setBusy(true)
     setError('')
     try {
-      const response = await fetch(`/api/session-archives/${encodeURIComponent(selected.id)}/restore`, {
+      const response = await authFetch(`/api/session-archives/${encodeURIComponent(selected.id)}/restore`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })

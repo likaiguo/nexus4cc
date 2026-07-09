@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import { useAuthFetch } from './AuthSessionProvider'
 
 interface Config {
   id: string
@@ -16,12 +17,13 @@ interface Props {
 
 export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const [shellType, setShellType] = useState<'claude' | 'codex' | 'bash'>('claude')
   const [configs, setConfigs] = useState<Config[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string>(() => localStorage.getItem('nexus_last_profile') || '')
 
   useEffect(() => {
-    fetch('/api/configs', { headers: { Authorization: `Bearer ${token}` } })
+    authFetch('/api/configs', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : [])
       .then((data: Config[]) => {
         setConfigs(data)
@@ -30,7 +32,7 @@ export default function NewWindowDialog({ token, onClose, onConfirm }: Props) {
         }
       })
       .catch(() => {})
-  }, [token])
+  }, [authFetch, token])
 
   function handleConfirm() {
     const profile = shellType === 'claude' && selectedProfile ? selectedProfile : undefined

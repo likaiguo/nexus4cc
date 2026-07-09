@@ -10,6 +10,7 @@ import {
   isWorkspaceTextFile,
   type WorkspaceEditorLanguage,
 } from './workspaceEditor'
+import { useAuthFetch } from './AuthSessionProvider'
 
 interface FileEntry {
   name: string
@@ -275,6 +276,7 @@ export interface WorkspaceBrowserHandle {
 
 const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function WorkspaceBrowser({ token, onClose, initialPath = '', currentSession, embedded, overlay, hideSidebar, onEditingChange, onPathChange }: Props, ref) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const [workspaceRoot, setWorkspaceRoot] = useState('')
 
   // Sidebar width for embedded mode (persisted + draggable)
@@ -338,7 +340,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
       // 1. 获取服务端配置
       let root = ''
       try {
-        const r = await fetch('/api/config', { headers })
+        const r = await authFetch('/api/config', { headers })
         if (r.ok) {
           const data = await r.json()
           root = data.workspaceRoot || ''
@@ -352,7 +354,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
       let targetPath = initialPath
       if (!targetPath && currentSession) {
         try {
-          const r = await fetch(`/api/session-cwd?session=${encodeURIComponent(currentSession)}`, { headers })
+          const r = await authFetch(`/api/session-cwd?session=${encodeURIComponent(currentSession)}`, { headers })
           if (r.ok) {
             const data = await r.json()
             targetPath = data?.cwd || root || '/'
@@ -370,7 +372,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
 
     init()
     return () => { cancelled = true }
-  }, [currentSession, token, initialPath])
+  }, [authFetch, currentSession, token, initialPath])
 
   // 选中条目
   const [selectedName, setSelectedName] = useState<string | null>(null)
@@ -490,7 +492,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     setSizesReady(false)
     setSelectedName(null) // 切换目录时清除选中
     try {
-      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=1' : ''}`, {
+      const r = await authFetch(`/api/workspace/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=1' : ''}`, {
         headers,
         signal: ctrl.signal,
       })
@@ -516,7 +518,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
       setEntries([])
       setLoading(false)
     }
-  }, [token, showHidden, onPathChange])
+  }, [authFetch, token, showHidden, onPathChange])
 
   // 当 currentPath 确定后加载内容
   useEffect(() => {
@@ -535,7 +537,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   const loadPickerEntries = useCallback(async (path: string) => {
     setPickerLoading(true)
     try {
-      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=1' : ''}`, { headers })
+      const r = await authFetch(`/api/workspace/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=1' : ''}`, { headers })
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
       const dirs = (data.entries || []).filter((e: FileEntry) => e.type === 'dir')
@@ -546,7 +548,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     } finally {
       setPickerLoading(false)
     }
-  }, [token, showHidden])
+  }, [authFetch, token, showHidden])
 
   // 当 pickerPath 变化时加载目录
   useEffect(() => {
@@ -568,7 +570,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     setIsRenaming(true)
     setRenameError('')
     try {
-      const r = await fetch('/api/workspace/rename', {
+      const r = await authFetch('/api/workspace/rename', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: getEntryPath(renameTarget.name), newName: renameName.trim() }),
@@ -592,7 +594,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   async function deleteEntry(entry: FileEntry) {
     if (!confirm(t('workspace.deleteConfirm', { name: entry.name }))) return
     try {
-      const r = await fetch('/api/workspace/entry', {
+      const r = await authFetch('/api/workspace/entry', {
         method: 'DELETE',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: getEntryPath(entry.name) }),
@@ -643,7 +645,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     const targetPath = pickerPath.endsWith('/') ? `${pickerPath}${pickerSource.name}` : `${pickerPath}/${pickerSource.name}`
     const sourcePath = getEntryPath(pickerSource.name)
     try {
-      const r = await fetch(`/api/workspace/${pickerMode}`, {
+      const r = await authFetch(`/api/workspace/${pickerMode}`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourcePath, targetPath }),
@@ -732,7 +734,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     setIsCreating(true)
     setNewItemError('')
     try {
-      const r = await fetch('/api/workspace/mkdir', {
+      const r = await authFetch('/api/workspace/mkdir', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: currentPath, name: newItemName.trim() }),
@@ -757,7 +759,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     setIsCreating(true)
     setNewItemError('')
     try {
-      const r = await fetch('/api/workspace/files', {
+      const r = await authFetch('/api/workspace/files', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: currentPath, name: newItemName.trim(), content: '' }),
@@ -786,7 +788,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     }
     const filePath = currentPath.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`
     try {
-      const r = await fetch(`/api/workspace/file?path=${encodeURIComponent(filePath)}`, { headers })
+      const r = await authFetch(`/api/workspace/file?path=${encodeURIComponent(filePath)}`, { headers })
       if (!r.ok) {
         if (r.status === 415) {
           // 服务器检测到二进制内容 → 回退浏览器原生打开
@@ -824,7 +826,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     if (!editingFile) return
     setIsSaving(true)
     try {
-      const r = await fetch('/api/workspace/file', {
+      const r = await authFetch('/api/workspace/file', {
         method: 'PUT',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: editingFile.path, content: editorContent, mtimeMs: editingFile.mtimeMs }),
