@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import { useAuthFetch } from './AuthSessionProvider'
 
 interface Props {
   token: string
@@ -23,6 +24,7 @@ type PasswordStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 export default function GeneralSettings({ token, themeMode, onToggleTheme, onClose, onOpenApiConfig }: Props) {
   const { t, i18n } = useTranslation()
+  const authFetch = useAuthFetch()
   const [currentVersion, setCurrentVersion] = useState<string>('')
   const [latestVersion, setLatestVersion] = useState<string>('')
   const [releaseUrl, setReleaseUrl] = useState<string>('')
@@ -39,14 +41,14 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
   const [passwordError, setPasswordError] = useState('')
 
   useEffect(() => {
-    fetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
+    authFetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data?.current) setCurrentVersion(data.current) })
       .catch(() => {})
-  }, [token])
+  }, [authFetch, token])
 
   useEffect(() => {
-    fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+    authFetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return
@@ -56,17 +58,17 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
         }
       })
       .catch(() => {})
-  }, [token])
+  }, [authFetch, token])
 
   async function handleCheckUpdate() {
     setUpdateStatus('checking')
     try {
-      const lRes = await fetch('/api/version/latest', { headers: { Authorization: `Bearer ${token}` } })
+      const lRes = await authFetch('/api/version/latest', { headers: { Authorization: `Bearer ${token}` } })
       if (!lRes.ok) { setUpdateStatus('error'); return }
       const lData = await lRes.json()
       if (lData.error) { setUpdateStatus('error'); return }
       // Re-fetch current version to get fresh clean state at check time
-      const vRes = await fetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
+      const vRes = await authFetch('/api/version', { headers: { Authorization: `Bearer ${token}` } })
       if (!vRes.ok) { setUpdateStatus('error'); return }
       const vData = await vRes.json()
       setCurrentVersion(vData.current)
@@ -96,7 +98,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
 
   async function savePrivacySettings(patch: Record<string, unknown>) {
     try {
-      const res = await fetch('/api/settings', {
+      const res = await authFetch('/api/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(patch),
@@ -112,7 +114,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
 
   async function handleClearHistory() {
     try {
-      const res = await fetch('/api/input-history', {
+      const res = await authFetch('/api/input-history', {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -132,7 +134,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
     }
     setPasswordStatus('saving')
     try {
-      const res = await fetch('/api/auth/password', {
+      const res = await authFetch('/api/auth/password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ currentPassword, newPassword }),

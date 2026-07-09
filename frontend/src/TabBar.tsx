@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_PULSE, STATUS_DOT_TITLE } from './windowStatus'
+import { useAuthFetch } from './AuthSessionProvider'
 
 interface TmuxWindow {
   index: number
@@ -28,6 +29,7 @@ interface Props {
 
 export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd, onOpenSettings, onUpload, onRename, token, sessions, activeSession, onSwitchSession, windowOutputs: windowOutputsProp, position = 'top' }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const [menuIndex, setMenuIndex] = useState<number | null>(null)
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 })
   const [renameIndex, setRenameIndex] = useState<number | null>(null)
@@ -49,7 +51,7 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
       const outputs: Record<number, any> = {}
       for (const win of windows) {
         try {
-          const r = await fetch(`/api/sessions/${win.index}/output`, { headers: { Authorization: `Bearer ${token}` } })
+          const r = await authFetch(`/api/sessions/${win.index}/output`, { headers: { Authorization: `Bearer ${token}` } })
           if (r.ok) outputs[win.index] = await r.json()
         } catch {}
       }
@@ -58,7 +60,7 @@ export default function TabBar({ windows, activeIndex, onSwitch, onClose, onAdd,
     fetchOutputs()
     const interval = setInterval(fetchOutputs, 5000)
     return () => clearInterval(interval)
-  }, [windows.map(w => w.index).join(','), token, windowOutputsProp])
+  }, [authFetch, windows.map(w => w.index).join(','), token, windowOutputsProp])
 
   // 自动滚动到激活的 tab
   useEffect(() => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import { useAuthFetch } from './AuthSessionProvider'
 
 export interface AttentionEvent {
   id: string
@@ -31,6 +32,7 @@ function eventTone(type: AttentionEvent['type']) {
 
 export default function AttentionCenter({ token, onClose, onJump, onChanged }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const [events, setEvents] = useState<AttentionEvent[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -40,7 +42,7 @@ export default function AttentionCenter({ token, onClose, onJump, onChanged }: P
   const loadEvents = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/attention-events?status=unresolved&limit=100', { headers })
+      const res = await authFetch('/api/attention-events?status=unresolved&limit=100', { headers })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setEvents(await res.json())
       setError('')
@@ -49,7 +51,7 @@ export default function AttentionCenter({ token, onClose, onJump, onChanged }: P
     } finally {
       setLoading(false)
     }
-  }, [token])
+  }, [authFetch, token])
 
   useEffect(() => {
     loadEvents()
@@ -57,7 +59,7 @@ export default function AttentionCenter({ token, onClose, onJump, onChanged }: P
 
   async function updateEvent(id: string, action: 'resolve' | 'dismiss') {
     try {
-      const res = await fetch(`/api/attention-events/${encodeURIComponent(id)}/${action}`, {
+      const res = await authFetch(`/api/attention-events/${encodeURIComponent(id)}/${action}`, {
         method: 'POST',
         headers,
       })
@@ -70,7 +72,7 @@ export default function AttentionCenter({ token, onClose, onJump, onChanged }: P
   async function markSeen(event: AttentionEvent) {
     if (event.status !== 'new') return
     try {
-      await fetch(`/api/attention-events/${encodeURIComponent(event.id)}`, {
+      await authFetch(`/api/attention-events/${encodeURIComponent(event.id)}`, {
         method: 'PATCH',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'seen' }),

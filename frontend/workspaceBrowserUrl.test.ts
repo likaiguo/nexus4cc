@@ -71,7 +71,7 @@ test('terminal synchronizes workspace browser state on browser history navigatio
 test('workspace browser reports server-normalized paths after directory loads', () => {
   assert.match(workspaceBrowserSource, /onPathChange\?: \(path: string\) => void/)
   assert.match(workspaceBrowserSource, /onPathChange\?\.\(data\.path\)/)
-  assert.match(workspaceBrowserSource, /\}, \[token, onPathChange\]\)/)
+  assert.match(workspaceBrowserSource, /\}, \[authFetch, token, onPathChange\]\)/)
 })
 
 test('workspace browser uses code editor helper and component for editable files', () => {

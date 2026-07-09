@@ -3,16 +3,13 @@ import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { WindowStatus, STATUS_DOT_COLOR, STATUS_DOT_PULSE, STATUS_DOT_TITLE } from './windowStatus'
-
-const STORAGE_KEY = 'nexus_token'
+import { useAuthFetch } from './AuthSessionProvider'
 
 /** Parse API error response into a user-friendly message.
- *  For 401, clears the token and reloads (auto-logout). */
+ *  401 handling is owned by the shared auth session handler. */
 async function parseApiError(r: Response, fallback?: string): Promise<string> {
   if (r.status === 401) {
-    localStorage.removeItem(STORAGE_KEY)
-    window.location.reload()
-    return '' // unreachable after reload
+    return ''
   }
   try {
     const data = await r.json()
@@ -123,6 +120,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   layout = 'modal',
 }: Props, ref) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const isDesktop = useIsDesktop()
   const isSidebar = layout === 'sidebar'
   const [projects, setProjects] = useState<Project[]>([])
@@ -158,7 +156,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   const fetchProjects = useCallback(async () => {
     setLoadingProjects(true)
     try {
-      const r = await fetch('/api/projects', { headers })
+      const r = await authFetch('/api/projects', { headers })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.loadFailed'))); return }
       setProjects(await r.json())
     } catch (e: unknown) {
@@ -166,12 +164,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     } finally {
       setLoadingProjects(false)
     }
-  }, [token])
+  }, [authFetch, token])
 
   const fetchChannels = useCallback(async (projectName: string, opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoadingChannels(true)
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/channels`, { headers })
+      const r = await authFetch(`/api/projects/${encodeURIComponent(projectName)}/channels`, { headers })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const data = await r.json()
       setChannels((data as any).channels || [])
@@ -182,7 +180,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     } finally {
       if (!opts?.silent) setLoadingChannels(false)
     }
-  }, [token])
+  }, [authFetch, token])
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
   useEffect(() => {
@@ -193,11 +191,11 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   const [channelStatus, setChannelStatus] = useState<ChannelStatusMap>({})
   const fetchChannelStatus = useCallback(async () => {
     try {
-      const r = await fetch('/api/channel-status', { headers })
+      const r = await authFetch('/api/channel-status', { headers })
       if (!r.ok) return
       setChannelStatus(await r.json())
     } catch { /* transient — keep last known */ }
-  }, [token])
+  }, [authFetch, token])
   useEffect(() => {
     fetchChannelStatus()
     const id = setInterval(fetchChannelStatus, 4000)
@@ -232,12 +230,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
       if (cur !== 'needs-confirm' && cur !== 'done') return prev
       return { ...prev, [projectName]: { ...prev[projectName], [String(index)]: 'active' } }
     })
-    fetch('/api/channel-status/seen', {
+    authFetch('/api/channel-status/seen', {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ session: projectName, index }),
     }).catch(() => {})
-  }, [token])
+  }, [authFetch, token])
 
   const handleRefresh = useCallback(() => {
     fetchProjects()
@@ -250,7 +248,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
 
   const saveProjectOrder = useCallback(async (nextProjects: Project[]) => {
     try {
-      const r = await fetch('/api/project-order', {
+      const r = await authFetch('/api/project-order', {
         method: 'PATCH',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ order: nextProjects.map(project => project.name) }),
@@ -262,12 +260,12 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
       setError(parseNetworkError(e))
       fetchProjects()
     }
-  }, [token, fetchProjects, t])
+  }, [authFetch, token, fetchProjects, t])
 
   const saveChannelOrder = useCallback(async (projectName: string, nextChannels: Channel[]) => {
     if (!projectName) return
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/channel-order`, {
+      const r = await authFetch(`/api/projects/${encodeURIComponent(projectName)}/channel-order`, {
         method: 'PATCH',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ order: nextChannels.map(channel => channel.index) }),
@@ -279,7 +277,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
       setError(parseNetworkError(e))
       fetchChannels(projectName)
     }
-  }, [token, fetchChannels, t])
+  }, [authFetch, token, fetchChannels, t])
 
   const beginReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return
@@ -384,7 +382,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     if (suppressClickRef.current) return
     if (project.name === currentProject) return
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}/activate`, { method: 'POST', headers })
+      const r = await authFetch(`/api/projects/${encodeURIComponent(project.name)}/activate`, { method: 'POST', headers })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.switchFailed'))); return }
       const data = await r.json()
       onSwitchProject(project.name, data.lastChannel)
@@ -396,7 +394,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
   const doSwitchChannel = async (channel: Channel, shouldClose: boolean) => {
     markChannelSeen(currentProject, channel.index)
     try {
-      const r = await fetch(`/api/sessions/${channel.index}/attach?session=${encodeURIComponent(currentProject)}`, {
+      const r = await authFetch(`/api/sessions/${channel.index}/attach?session=${encodeURIComponent(currentProject)}`, {
         method: 'POST',
         headers,
       })
@@ -414,7 +412,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     const newName = window.prompt(`${t('common.rename')} Channel:`, channel.name)
     if (!newName || newName === channel.name) return
     try {
-      const r = await fetch(`/api/sessions/${channel.index}/rename?session=${encodeURIComponent(currentProject)}`, {
+      const r = await authFetch(`/api/sessions/${channel.index}/rename?session=${encodeURIComponent(currentProject)}`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName }),
@@ -430,7 +428,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     setChannelMenu(null)
     setSidebarChannelMenu(null)
     try {
-      const r = await fetch(`/api/sessions/${channel.index}?session=${encodeURIComponent(currentProject)}`, {
+      const r = await authFetch(`/api/sessions/${channel.index}?session=${encodeURIComponent(currentProject)}`, {
         method: 'DELETE',
         headers,
       })
@@ -447,7 +445,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     const newName = window.prompt(`${t('common.rename')} Project:`, project.name)
     if (!newName || newName === project.name) return
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}/rename`, {
+      const r = await authFetch(`/api/projects/${encodeURIComponent(project.name)}/rename`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName }),
@@ -464,7 +462,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     setProjectMenu(null)
     setSidebarProjectMenu(null)
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE', headers })
+      const r = await authFetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE', headers })
       if (!r.ok) { setError(await parseApiError(r, t('sessionMgr.closeFailed'))); return }
       fetchProjects()
       if (project.name === currentProject) {

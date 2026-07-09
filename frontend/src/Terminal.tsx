@@ -11,6 +11,12 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import { useAuthFetch } from './AuthSessionProvider'
+import {
+  isAuthWebSocketClose,
+  shouldReconnectTerminalWebSocket,
+  type AuthExpiredHandler,
+} from './authSession'
 import {
   buildProjectChannelUrl,
   clearWorkspaceBrowserUrl,
@@ -268,6 +274,7 @@ interface TmuxWindow {
 
 interface Props {
   token: string
+  onAuthExpired: AuthExpiredHandler
 }
 
 type ComposerMode = 'direct' | 'composer'
@@ -405,8 +412,9 @@ function applyNexusCssVars(mode: ThemeMode) {
 applyNexusCssVars(getInitialTheme())
 
 // Agent 状态推断（F-15）
-export default function Terminal({ token }: Props) {
+export default function Terminal({ token, onAuthExpired }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const initialLocationRef = useRef<ProjectChannelLocation | null>(null)
   if (initialLocationRef.current === null) initialLocationRef.current = initialUrlRequest()
   const initialLocation = initialLocationRef.current
@@ -418,6 +426,7 @@ export default function Terminal({ token }: Props) {
   const termRef = useRef<XTerm | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimerRef = useRef<number | null>(null)
   const userScrolledRef = useRef(false)
   const lastContainerSizeRef = useRef({ w: 0, h: 0 })
   const inputRef = useRef<HTMLInputElement>(null)
@@ -549,7 +558,7 @@ export default function Terminal({ token }: Props) {
 
   // 加载服务端默认 session
   useEffect(() => {
-    fetch('/api/config', { headers: { Authorization: `Bearer ${token}` } })
+    authFetch('/api/config', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then(d => {
         if (d.tmuxSession && !localStorage.getItem('nexus_session') && !initialLocation.hasProject) {
@@ -558,13 +567,13 @@ export default function Terminal({ token }: Props) {
         }
       })
       .catch(() => {})
-  }, [initialLocation.hasProject, token])
+  }, [authFetch, initialLocation.hasProject, token])
 
   // 获取所有 tmux sessions 和 projects
   useEffect(() => {
     const fetchSessions = async () => {
       try {
-        const r = await fetch('/api/tmux-sessions', { headers: { Authorization: `Bearer ${token}` } })
+        const r = await authFetch('/api/tmux-sessions', { headers: { Authorization: `Bearer ${token}` } })
         if (r.ok) {
           const sessions = await r.json()
           setTmuxSessions(sessions.map((s: any) => s.name))
@@ -573,7 +582,7 @@ export default function Terminal({ token }: Props) {
     }
     const fetchProjects = async () => {
       try {
-        const r = await fetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
+        const r = await authFetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
         if (r.ok) {
           setProjects(await r.json())
         }
@@ -586,20 +595,20 @@ export default function Terminal({ token }: Props) {
       fetchProjects()
     }, 10000)
     return () => clearInterval(interval)
-  }, [token])
+  }, [authFetch, token])
 
   const fetchProjectList = useCallback(async (): Promise<ProjectInfo[]> => {
-    const r = await fetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
+    const r = await authFetch('/api/projects', { headers: { Authorization: `Bearer ${token}` } })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     return await r.json()
-  }, [token])
+  }, [authFetch, token])
 
   const fetchWindowList = useCallback(async (session: string): Promise<TmuxWindow[]> => {
-    const r = await fetch(`/api/sessions?session=${encodeURIComponent(session)}`, { headers: { Authorization: `Bearer ${token}` } })
+    const r = await authFetch(`/api/sessions?session=${encodeURIComponent(session)}`, { headers: { Authorization: `Bearer ${token}` } })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     const d = await r.json()
     return d.windows ?? []
-  }, [token])
+  }, [authFetch, token])
 
   const resolveChannelIndex = useCallback((wins: TmuxWindow[], preferred?: number | null) => {
     if (preferred !== undefined && preferred !== null && wins.some(w => w.index === preferred)) return preferred
@@ -608,14 +617,14 @@ export default function Terminal({ token }: Props) {
   }, [])
 
   const activateProject = useCallback(async (project: string): Promise<number | null> => {
-    const r = await fetch(`/api/projects/${encodeURIComponent(project)}/activate`, {
+    const r = await authFetch(`/api/projects/${encodeURIComponent(project)}/activate`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     const data = await r.json()
     return data.lastChannel === null || data.lastChannel === undefined ? null : Number(data.lastChannel)
-  }, [token])
+  }, [authFetch, token])
 
   useEffect(() => {
     const check = () => setIsWidePC(window.innerWidth >= 768)
@@ -674,17 +683,17 @@ export default function Terminal({ token }: Props) {
 
   const fetchAttentionCount = useCallback(async () => {
     try {
-      const res = await fetch('/api/attention-events/count?status=unresolved', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await authFetch('/api/attention-events/count?status=unresolved', { headers: { Authorization: `Bearer ${token}` } })
       if (!res.ok) return
       const data = await res.json()
       setAttentionCount(Number(data.count) || 0)
     } catch {}
-  }, [token])
+  }, [authFetch, token])
 
   const showAttentionNotification = useCallback(async () => {
     if (!('Notification' in window) || Notification.permission !== 'granted') return
     try {
-      const res = await fetch('/api/attention-events?status=unresolved&limit=1', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await authFetch('/api/attention-events?status=unresolved&limit=1', { headers: { Authorization: `Bearer ${token}` } })
       if (!res.ok) return
       const events = await res.json()
       const event = Array.isArray(events) ? events[0] : null
@@ -693,7 +702,7 @@ export default function Terminal({ token }: Props) {
       const summary = String(event.summary || '').replace(/\s+/g, ' ').slice(0, 120)
       new Notification(typeLabel, { body: summary })
     } catch {}
-  }, [t, token])
+  }, [authFetch, t, token])
 
   useEffect(() => {
     fetchAttentionCount()
@@ -774,21 +783,21 @@ export default function Terminal({ token }: Props) {
   }, [])
 
   const markChannelSeenRemote = useCallback((project: string, channelIndex: number) => {
-    fetch('/api/channel-status/seen', {
+    authFetch('/api/channel-status/seen', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ session: project, index: channelIndex }),
     }).catch(() => {})
-  }, [token])
+  }, [authFetch, token])
 
   const attachResolvedChannel = useCallback(async (project: string, channelIndex: number) => {
-    const r = await fetch(`/api/sessions/${channelIndex}/attach?session=${encodeURIComponent(project)}`, {
+    const r = await authFetch(`/api/sessions/${channelIndex}/attach?session=${encodeURIComponent(project)}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
     markChannelSeenRemote(project, channelIndex)
-  }, [markChannelSeenRemote, token])
+  }, [authFetch, markChannelSeenRemote, token])
 
   const applyResolvedLocation = useCallback((project: string, channelIndex: number, resolvedWindows?: TmuxWindow[], options: { syncUrl?: boolean } = {}) => {
     const { syncUrl: shouldSyncUrl = true } = options
@@ -901,7 +910,7 @@ export default function Terminal({ token }: Props) {
 
   const saveComposerSettings = useCallback(async (patch: Partial<{ composerMode: ComposerMode; composerAppendEnter: boolean }>) => {
     try {
-      const res = await fetch('/api/settings', {
+      const res = await authFetch('/api/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(patch),
@@ -916,7 +925,7 @@ export default function Terminal({ token }: Props) {
       }
       setComposerAppendEnter(settings.composerAppendEnter !== false)
     } catch {}
-  }, [token])
+  }, [authFetch, token])
 
   const updateComposerSelection = useCallback(() => {
     const textarea = composerTextareaRef.current
@@ -944,7 +953,7 @@ export default function Terminal({ token }: Props) {
   const saveComposerDraftNow = useCallback(async (text: string, cursorPos: number, scope = composerScopeRef.current) => {
     if (!scope) return
     try {
-      await fetch('/api/composer-drafts', {
+      await authFetch('/api/composer-drafts', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -955,17 +964,17 @@ export default function Terminal({ token }: Props) {
         }),
       })
     } catch {}
-  }, [token])
+  }, [authFetch, token])
 
   const clearComposerDraftRemote = useCallback(async (scope = composerScopeRef.current) => {
     if (!scope) return
     try {
-      await fetch(`/api/composer-drafts?project=${encodeURIComponent(scope.project)}&channel=${encodeURIComponent(String(scope.channelIndex))}`, {
+      await authFetch(`/api/composer-drafts?project=${encodeURIComponent(scope.project)}&channel=${encodeURIComponent(String(scope.channelIndex))}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
     } catch {}
-  }, [token])
+  }, [authFetch, token])
 
   const loadComposerHistory = useCallback(async () => {
     setComposerHistoryLoading(true)
@@ -975,14 +984,14 @@ export default function Terminal({ token }: Props) {
         channel: String(activeWindowIndexRef.current),
         limit: '50',
       })
-      const res = await fetch(`/api/input-history?${params}`, { headers: { Authorization: `Bearer ${token}` } })
+      const res = await authFetch(`/api/input-history?${params}`, { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) setComposerHistory(await res.json())
     } catch {
       setComposerHistory([])
     } finally {
       setComposerHistoryLoading(false)
     }
-  }, [token])
+  }, [authFetch, token])
 
   const toggleComposerMode = useCallback((mode: ComposerMode) => {
     composerModeRef.current = mode
@@ -1055,7 +1064,7 @@ export default function Terminal({ token }: Props) {
     sendToWs(text + (composerAppendEnter ? '\r' : ''))
     const scope = composerScopeRef.current ?? { project: activeTmuxSessionRef.current, channelIndex: activeWindowIndexRef.current }
     try {
-      await fetch('/api/input-history', {
+      await authFetch('/api/input-history', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ project: scope.project, channelIndex: scope.channelIndex, text }),
@@ -1096,7 +1105,7 @@ export default function Terminal({ token }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+    authFetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(settings => {
         if (cancelled || !settings) return
@@ -1113,7 +1122,7 @@ export default function Terminal({ token }: Props) {
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [focusComposerTextareaSoon, token])
+  }, [authFetch, focusComposerTextareaSoon, token])
 
   useEffect(() => {
     const scope = { project: activeTmuxSession, channelIndex: activeWindowIndex }
@@ -1133,7 +1142,7 @@ export default function Terminal({ token }: Props) {
     setComposerDraftLoaded(false)
     let cancelled = false
     const params = new URLSearchParams({ project: scope.project, channel: String(scope.channelIndex) })
-    fetch(`/api/composer-drafts?${params}`, { headers: { Authorization: `Bearer ${token}` } })
+    authFetch(`/api/composer-drafts?${params}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : null)
       .then(draft => {
         if (cancelled) return
@@ -1156,7 +1165,7 @@ export default function Terminal({ token }: Props) {
         if (!cancelled) setComposerDraftLoaded(true)
       })
     return () => { cancelled = true }
-  }, [activeTmuxSession, activeWindowIndex, saveComposerDraftNow, token])
+  }, [activeTmuxSession, activeWindowIndex, authFetch, saveComposerDraftNow, token])
 
   useEffect(() => {
     if (!composerDraftLoaded || !composerDraftDirty) return
@@ -1242,7 +1251,7 @@ export default function Terminal({ token }: Props) {
       const outputs: Record<number, any> = {}
       for (const win of windows) {
         try {
-          const r = await fetch(`/api/sessions/${win.index}/output?session=${encodeURIComponent(activeTmuxSession)}`, { headers: { Authorization: `Bearer ${token}` } })
+          const r = await authFetch(`/api/sessions/${win.index}/output?session=${encodeURIComponent(activeTmuxSession)}`, { headers: { Authorization: `Bearer ${token}` } })
           if (r.ok) outputs[win.index] = await r.json()
         } catch {}
       }
@@ -1250,7 +1259,7 @@ export default function Terminal({ token }: Props) {
     }
     const interval = setInterval(fetchOutputs, 3000)
     return () => clearInterval(interval)
-  }, [windows.length, token, activeTmuxSession])
+  }, [activeTmuxSession, authFetch, token, windows.length])
 
   
   const scrollToBottom = useCallback(() => {
@@ -1403,7 +1412,7 @@ export default function Terminal({ token }: Props) {
 
     try {
       const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions/${index}/attach?session=${encodeURIComponent(session)}`, {
+      const r = await authFetch(`/api/sessions/${index}/attach?session=${encodeURIComponent(session)}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` }
       })
@@ -1433,7 +1442,7 @@ export default function Terminal({ token }: Props) {
   async function closeWindow(index: number) {
     try {
       const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions/${index}?session=${encodeURIComponent(session)}`, {
+      const r = await authFetch(`/api/sessions/${index}?session=${encodeURIComponent(session)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       })
@@ -1448,7 +1457,7 @@ export default function Terminal({ token }: Props) {
   async function renameWindow(index: number, name: string) {
     try {
       const session = activeTmuxSessionRef.current
-      const r = await fetch(`/api/sessions/${index}/rename?session=${encodeURIComponent(session)}`, {
+      const r = await authFetch(`/api/sessions/${index}/rename?session=${encodeURIComponent(session)}`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -1464,7 +1473,7 @@ export default function Terminal({ token }: Props) {
   async function createSession(relPath: string, shellType: 'claude' | 'codex' | 'bash' = 'claude', profile?: string) {
     try {
       // F-20: 使用 /api/projects 创建新的 project（tmux session）
-      const r = await fetch('/api/projects', {
+      const r = await authFetch('/api/projects', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: relPath, shell_type: shellType, profile }),
@@ -1487,7 +1496,7 @@ export default function Terminal({ token }: Props) {
       const currentProject = projects.find(p => p.name === session)
       const projectPath = currentProject?.path
       // 修复：使用正确的 API 端点 /api/projects/:name/channels
-      const r = await fetch(`/api/projects/${encodeURIComponent(session)}/channels`, {
+      const r = await authFetch(`/api/projects/${encodeURIComponent(session)}/channels`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ shell_type: shellType, profile, path: projectPath }),
@@ -1496,7 +1505,7 @@ export default function Terminal({ token }: Props) {
         const { name: newWindowName } = await r.json()
         await new Promise(resolve => setTimeout(resolve, 300))
         const sessionNow = activeTmuxSessionRef.current
-        const listRes = await fetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
+        const listRes = await authFetch(`/api/sessions?session=${encodeURIComponent(sessionNow)}`, {
           headers: { Authorization: `Bearer ${token}` }
         })
         if (listRes.ok) {
@@ -1608,6 +1617,10 @@ export default function Terminal({ token }: Props) {
     }
 
     xhr.onload = () => {
+      if (xhr.status === 401) {
+        onAuthExpired()
+        return
+      }
       if (xhr.status === 409) {
         try {
           const data = JSON.parse(xhr.responseText)
@@ -2000,7 +2013,7 @@ export default function Terminal({ token }: Props) {
               // Pre-fetch while gesture is still building up
               const wi = activeWindowIndexRef.current
               const s = activeTmuxSessionRef.current
-              scrollbackPrefetchRef.current = fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${HISTORY_FETCH_LINES}`, {
+              scrollbackPrefetchRef.current = authFetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${HISTORY_FETCH_LINES}`, {
                 headers: { Authorization: `Bearer ${token}` },
               }).then(r => r.ok ? r.json() : Promise.reject(r.status))
                 .then((data: { content: string }) => {
@@ -2207,6 +2220,10 @@ export default function Terminal({ token }: Props) {
       wsRef.current = newWs
 
       newWs.onopen = () => {
+        if (reconnectTimerRef.current !== null) {
+          window.clearTimeout(reconnectTimerRef.current)
+          reconnectTimerRef.current = null
+        }
         if (isReconnect) {
           writeTerm('\r\n\x1b[32m[Nexus: 已重新连接]\x1b[0m\r\n')
         } else {
@@ -2245,8 +2262,15 @@ export default function Terminal({ token }: Props) {
 
       newWs.onclose = (e) => {
         if (intentionalClose) return
-        if (e.code === 4001) {
-          writeTerm('\r\n\x1b[31m[Nexus: 认证失败，请刷新重新登录]\x1b[0m\r\n')
+        if (isAuthWebSocketClose(e.code)) {
+          if (reconnectTimerRef.current !== null) {
+            window.clearTimeout(reconnectTimerRef.current)
+            reconnectTimerRef.current = null
+          }
+          onAuthExpired()
+          return
+        }
+        if (!shouldReconnectTerminalWebSocket(e.code)) {
           return
         }
         if (reconnectAttempts >= maxReconnectAttempts) {
@@ -2256,7 +2280,10 @@ export default function Terminal({ token }: Props) {
         reconnectAttempts++
         const delay = reconnectDelay()
         writeTerm(`\r\n\x1b[33m[Nexus: 连接断开，${delay / 1000}s 后重连 (${reconnectAttempts}/${maxReconnectAttempts})...]\x1b[0m\r\n`)
-        setTimeout(() => createWs(true), delay)
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null
+          createWs(true)
+        }, delay)
       }
 
       newWs.onerror = () => writeTerm('\r\n\x1b[31m[Nexus: WebSocket 错误]\x1b[0m\r\n')
@@ -2267,9 +2294,13 @@ export default function Terminal({ token }: Props) {
     return () => {
       intentionalClose = true
       clearTimeout(loadingTimer)
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
       wsRef.current?.close()
     }
-  }, [token, activeWindowIndex, wsSessionKey])
+  }, [activeWindowIndex, onAuthExpired, token, wsSessionKey])
 
   const isComposingRef = useRef(false)
 
@@ -2479,7 +2510,7 @@ export default function Terminal({ token }: Props) {
     const wi = activeWindowIndexRef.current
     const s = activeTmuxSessionRef.current
     const promise = scrollbackPrefetchRef.current ??
-      fetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${HISTORY_FETCH_LINES}`, {
+      authFetch(`/api/sessions/${wi}/scrollback?session=${encodeURIComponent(s)}&lines=${HISTORY_FETCH_LINES}`, {
         headers: { Authorization: `Bearer ${token}` },
       }).then(r => r.ok ? r.json() : Promise.reject(r.status))
 

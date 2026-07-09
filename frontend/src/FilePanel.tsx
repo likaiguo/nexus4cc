@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Icon } from './icons'
+import { useAuthFetch } from './AuthSessionProvider'
 
 type SortKey = 'name' | 'modified' | 'size'
 
@@ -42,6 +43,7 @@ function useFormatDate() {
 
 export default function FilePanel({ token, session, onClose }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const formatDate = useFormatDate()
   const [groups, setGroups] = useState<FileGroup[]>([])
   const [loading, setLoading] = useState(true)
@@ -72,7 +74,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
 
   const fetchFiles = useCallback(async () => {
     try {
-      const r = await fetch(`/api/files?session=${encodeURIComponent(session)}`, {
+      const r = await authFetch(`/api/files?session=${encodeURIComponent(session)}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       if (r.ok) {
@@ -84,7 +86,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [token])
+  }, [authFetch, session, token])
 
   useEffect(() => {
     fetchFiles()
@@ -135,7 +137,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
   async function deleteFile(fullPath: string, filename: string) {
     if (!confirm(t('files.deleteConfirm', { filename }))) return
     try {
-      const r = await fetch(`/api/files/content?path=${encodeURIComponent(fullPath)}`, {
+      const r = await authFetch(`/api/files/content?path=${encodeURIComponent(fullPath)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       })
@@ -150,7 +152,7 @@ export default function FilePanel({ token, session, onClose }: Props) {
   async function deleteAllFiles() {
     if (!confirm(t('files.deleteAllConfirm', { count: totalFiles }))) return
     try {
-      const r = await fetch(`/api/files/all?session=${encodeURIComponent(session)}`, {
+      const r = await authFetch(`/api/files/all?session=${encodeURIComponent(session)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       })

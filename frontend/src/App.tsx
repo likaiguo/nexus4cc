@@ -1,10 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import Terminal from './Terminal'
 import { Icon } from './icons'
+import { AuthSessionProvider } from './AuthSessionProvider'
+import {
+  AUTH_TOKEN_STORAGE_KEY,
+  removeSavedAuthToken,
+  validateSavedAuthToken,
+} from './authSession'
 
-const STORAGE_KEY = 'nexus_token'
 const DEFAULT_LOGIN_PASSWORD = 'nexus123'
+type SessionCheckState = 'idle' | 'checking' | 'valid' | 'unreachable'
 
 interface AuthStatus {
   readonly defaultPassword: boolean
@@ -20,12 +26,26 @@ function isAuthStatus(value: unknown): value is AuthStatus {
 
 export default function App() {
   const { t } = useTranslation()
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY))
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY))
+  const [validatedToken, setValidatedToken] = useState<string | null>(null)
+  const [sessionCheck, setSessionCheck] = useState<SessionCheckState>(() => token ? 'checking' : 'idle')
+  const [sessionCheckRetry, setSessionCheckRetry] = useState(0)
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [usesDefaultPassword, setUsesDefaultPassword] = useState(false)
   const [passwordVisible, setPasswordVisible] = useState(false)
+
+  const handleAuthExpired = useCallback(() => {
+    removeSavedAuthToken()
+    setToken(null)
+    setValidatedToken(null)
+    setSessionCheck('idle')
+    setLoading(false)
+    setError('')
+    setPassword('')
+    setUsesDefaultPassword(false)
+  }, [])
 
   useEffect(() => {
     // 注册 Service Worker
@@ -37,16 +57,53 @@ export default function App() {
   useEffect(() => {
     if (token) return
     let active = true
+    setUsesDefaultPassword(false)
     fetch('/api/auth/status')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (!active || !isAuthStatus(data) || !data.defaultPassword) return
+        if (!active || !isAuthStatus(data)) return
+        if (!data.defaultPassword) {
+          setUsesDefaultPassword(false)
+          return
+        }
         setUsesDefaultPassword(true)
         setPassword(data.password || DEFAULT_LOGIN_PASSWORD)
       })
       .catch(() => {})
     return () => { active = false }
   }, [token])
+
+  useEffect(() => {
+    if (!token) {
+      setValidatedToken(null)
+      setSessionCheck('idle')
+      return
+    }
+    if (validatedToken === token) {
+      setSessionCheck('valid')
+      return
+    }
+    let active = true
+    setSessionCheck('checking')
+    validateSavedAuthToken(token)
+      .then(result => {
+        if (!active) return
+        if (result === 'valid') {
+          setValidatedToken(token)
+          setSessionCheck('valid')
+          return
+        }
+        if (result === 'unauthorized') {
+          handleAuthExpired()
+          return
+        }
+        setSessionCheck('unreachable')
+      })
+      .catch(() => {
+        if (active) setSessionCheck('unreachable')
+      })
+    return () => { active = false }
+  }, [handleAuthExpired, sessionCheckRetry, token, validatedToken])
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -63,7 +120,9 @@ export default function App() {
         return
       }
       const { token: authToken } = await res.json()
-      localStorage.setItem(STORAGE_KEY, authToken)
+      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken)
+      setValidatedToken(authToken)
+      setSessionCheck('valid')
       setToken(authToken)
     } catch {
       setError(t('login.connectionFailed'))
@@ -72,8 +131,34 @@ export default function App() {
     }
   }
 
-  if (token) {
-    return <Terminal token={token} />
+  if (token && sessionCheck === 'valid') {
+    return (
+      <AuthSessionProvider onAuthExpired={handleAuthExpired}>
+        <Terminal token={token} onAuthExpired={handleAuthExpired} />
+      </AuthSessionProvider>
+    )
+  }
+
+  if (token && sessionCheck !== 'valid') {
+    return (
+      <div className="flex items-center justify-center w-full h-full bg-nexus-bg">
+        <div className="bg-nexus-bg-2 rounded-xl p-8 min-w-80 shadow-[0_8px_32px_rgba(0,0,0,0.3)] border border-nexus-border text-center">
+          <h1 className="text-nexus-text text-2xl font-bold mb-3 tracking-widest">{t('login.title')}</h1>
+          <p className="text-nexus-text-2 text-sm mb-5">
+            {sessionCheck === 'checking' ? t('login.checkingSession') : t('login.savedSessionConnectionFailed')}
+          </p>
+          {sessionCheck === 'unreachable' && (
+            <button
+              type="button"
+              className="bg-nexus-accent border-none rounded-lg text-white text-sm font-semibold py-2.5 px-5 cursor-pointer"
+              onClick={() => setSessionCheckRetry(value => value + 1)}
+            >
+              {t('common.refresh')}
+            </button>
+          )}
+        </div>
+      </div>
+    )
   }
 
   return (

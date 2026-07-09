@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
+import { useAuthFetch } from './AuthSessionProvider'
 
 interface BrowseResult {
   path: string
@@ -33,6 +34,7 @@ function useIsDesktop() {
 
 export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) {
   const { t } = useTranslation()
+  const authFetch = useAuthFetch()
   const isDesktop = useIsDesktop()
   const [selectedPath, setSelectedPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
   const [inputPath, setInputPath] = useState(() => localStorage.getItem('nexus_last_path') || '/workspace')
@@ -54,7 +56,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
     setBrowseError(null)
     try {
       const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : '/api/browse'
-      const r = await fetch(url, { headers })
+      const r = await authFetch(url, { headers })
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const data: BrowseResult = await r.json()
       setBrowsePath(data.path)
@@ -74,7 +76,7 @@ export default function WorkspaceSelector({ token, onClose, onConfirm }: Props) 
 
   async function fetchConfigs() {
     try {
-      const r = await fetch('/api/configs', { headers })
+      const r = await authFetch('/api/configs', { headers })
       if (r.ok) {
         const data = await r.json()
         setConfigs(data)
