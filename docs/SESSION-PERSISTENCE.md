@@ -207,3 +207,35 @@ tmux show-option -gv status-right
 
 > 任何时候宕机后也可手动执行 §7 的 `restore.sh` 一行命令立即找回全部结构，
 > 再 `bash scripts/nexus-resume-claude.sh <快照文件>` 拉起 claude 频道。
+
+## 10. 事故记录 — 2026-07-25 启动竞态导致恢复静默失败
+
+宿主机重启后，Nexus 启动时 `nexus-restore-tmux.sh` 被调用 6 次（10:09–10:12），
+**全部失败**，错误均为 `no server running on /tmp/tmux-1000/default`。
+
+**根因**：WSL2 刚启动时的竞态。多个进程同时争抢 default tmux socket：
+- `nexus-restore-tmux.sh` 的 `tmux start-server`
+- ttyd 的 `tmux new-session -A -s claude-host-*`
+- server.js 的 `tmux new-session -d -s main`
+
+脚本的 `tmux start-server 2>/dev/null || true` 静默吞掉了启动失败，
+导致后续 `tmux run-shell restore.sh` 找不到 server。6 次尝试全在 ~3 分钟内发生，
+每次都以「无 server → 跳过恢复 → 创建全新 main session」结束，
+没有任何一次恢复成功。
+
+**恶化因素**：恢复失败后 continuum 继续每 5 分钟自动保存，`last` 链接被覆盖为
+几乎为空的快照（只有新创建的 3 个 session），导致后续即使手动恢复也会读到空快照。
+好在本案中重启前的完整快照（`tmux_resurrect_20260725T091845.txt`，3415 bytes，
+含 5 session + 13 window）仍在磁盘上，未被删除。
+
+**恢复**：重新 `ln -sf` 指向重启前快照 → 手动 `restore.sh` → 全部 5 session 找回。
+对照快照 `pane_full_command` 列确认 `nexus-run-claude.sh` 启动的频道均正确还原了
+cwd 与 profile。
+
+**修复**（已实施）：`scripts/nexus-restore-tmux.sh` 中 `tmux start-server` 改为
+带重试循环（最多 10 次、每次间隔 1s），并用 `tmux info` 验证 server 确实就绪后才继续恢复。
+同时加了兜底：若 10 次后仍无 server，脚本以 `exit 0` 主动退出（不阻塞 Nexus 启动）。
+
+**教训**：① 不要在启动路径中静默吞掉 server 创建失败；② `tmux start-server` 成功 ≠
+server 能稳定服务后续命令，需用 `tmux info` 等验证就绪；③ `last` 链接被 POST-故障快照
+覆盖是一个设计弱点——理想情况应在恢复成功后才更新 `last`（或保留最近 N 个快照的硬链接）。

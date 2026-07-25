@@ -1658,7 +1658,7 @@ function MarkdownPreview({ content, fontSize = 14 }: { content: string; fontSize
       'ul', 'ol', 'li', 'blockquote', 'hr', 'table', 'thead', 'tbody',
       'tr', 'th', 'td', 'input' // input for task lists
     ],
-    ALLOWED_ATTR: ['id', 'href', 'src', 'alt', 'title', 'target', 'rel', 'checked', 'disabled'],
+    ALLOWED_ATTR: ['id', 'href', 'src', 'alt', 'title', 'target', 'rel', 'type', 'checked', 'disabled'],
     ALLOW_DATA_ATTR: false,
   })
 
@@ -1687,7 +1687,8 @@ function MarkdownPreview({ content, fontSize = 14 }: { content: string; fontSize
         [&_th]:border [&_th]:border-nexus-border [&_th]:bg-nexus-bg-2 [&_th]:p-2 [&_th]:text-left [&_th]:text-nexus-text
         [&_td]:border [&_td]:border-nexus-border [&_td]:p-2 [&_td]:text-nexus-text
         [&_tr:nth-child(even)]:bg-nexus-bg-2/50
-        [&_input[type='checkbox']]:mr-2 [&_input[type='checkbox']]:accent-nexus-accent"
+        [&_input[type='checkbox']]:mr-2 [&_input[type='checkbox']]:accent-nexus-accent
+        [&_li:has(input)]:list-none"
       style={{ fontSize: `${fontSize}px`, lineHeight: '1.6' }}
       dangerouslySetInnerHTML={{ __html: cleanHtml }}
     />

@@ -153,7 +153,7 @@ Rules: English subject, imperative mood, no trailing period, blank line before b
 | New feature / interface | `README.md` + `docs/PRD.md` |
 | Roadmap / scope change | `docs/ROADMAP.md` |
 | Architecture change | `docs/ARCHITECTURE.md` |
-| Process / convention | `CLAUDE.md` (this file) |
+| Process / convention | `CLAUDE.md` (this file) + `docs/MAINTENANCE.md` |
 | Env var added | `.env.example` + commit body |
 | Bug fix | commit body (root cause) |
 | Session/persistence change | `docs/SESSION-PERSISTENCE.md` |

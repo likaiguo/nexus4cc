@@ -40,8 +40,27 @@ if tmux show-environment -g NEXUS_RESTORED >/dev/null 2>&1; then
   exit 0
 fi
 
-# 确保有 tmux 服务器供 resurrect 注入（已存在则 no-op）
-tmux start-server 2>/dev/null || true
+# 确保有 tmux 服务器供 resurrect 注入（已存在则 no-op）。
+# 宿主机/WSL2 刚启动时存在竞态：ttyd/tmux new-session -A 与 Nexus 同时争抢 default socket，
+# 可能导致 tmux start-server 启动的 server 进程还没稳定就被抢占退出（见 SESSION-PERSISTENCE.md §10）。
+# 此处重试最多 10 次、每次间隔 1s，直到 server 真正就绪并能响应命令。
+server_ready=false
+for i in $(seq 1 10); do
+  if tmux start-server 2>/dev/null && tmux has-session 2>/dev/null; then
+    # has-session 成功说明 server 已在正常服务（可能已有其他进程创建了 session）
+    server_ready=true
+    break
+  fi
+  if tmux info >/dev/null 2>&1; then
+    server_ready=true
+    break
+  fi
+  sleep 1
+done
+if [ "$server_ready" = false ]; then
+  echo "[nexus-restore] tmux 服务器启动失败，跳过恢复（将在无历史状态下启动）" >&2
+  exit 0
+fi
 
 # 标记先行：即使后续恢复失败，也不在同一服务器生命周期内重试（避免覆盖在跑会话）
 tmux set-environment -g NEXUS_RESTORED 1 2>/dev/null || true

@@ -1024,12 +1024,15 @@ export default function Terminal({ token }: Props) {
     // Defer initial fit so fonts and flex layout are fully settled
     requestAnimationFrame(() => fitAddon.fit())
 
-    // On mobile: suppress keyboard from xterm's internal textarea until user explicitly enables it
+    // On mobile: suppress keyboard from xterm's internal textarea entirely.
+    // All keyboard input goes through the hidden input (position:fixed;top:0),
+    // which avoids the browser scrolling the page to keep the xterm textarea
+    // (positioned at the cursor) visible — a scroll that hides the toolbar.
     const xtermTextarea = term.textarea
     if (xtermTextarea && window.innerWidth < 1024) {
       xtermTextarea.inputMode = 'none'
       xtermTextarea.addEventListener('touchstart', (e: TouchEvent) => {
-        if (!keyboardVisibleRef.current) e.preventDefault()
+        e.preventDefault()
       }, { passive: false })
     }
 
@@ -1324,19 +1327,15 @@ export default function Terminal({ token }: Props) {
           if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
         } else {
           keyboardVisibleRef.current = true
-          const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
-          if (isIOS) {
-            // iOS Safari won't reliably show the keyboard for xterm's internal
-            // textarea (tiny element + restrictive attributes). Use our standard
-            // <input> instead — iOS handles it correctly.
-            if (xtermTa) xtermTa.inputMode = 'none'
-            if (inputRef.current) { inputRef.current.inputMode = 'text'; inputRef.current.focus() }
-          } else {
-            // Android / other: focus xterm's own textarea — term.onData handles
-            // all input natively (letters, numbers, IME/CJK).
-            if (xtermTa) { xtermTa.inputMode = 'text'; xtermTa.focus() }
-            if (inputRef.current) inputRef.current.inputMode = 'text'
-          }
+          // Always focus the hidden input at the top of the viewport, not
+          // xterm's internal textarea. xterm positions its textarea at the
+          // cursor, which is often in the lower half of the terminal. On
+          // foldables in pan mode, the browser sees that element would be
+          // hidden behind the keyboard and scrolls the page up — pushing
+          // the toolbar behind the keyboard. The hidden input sits at
+          // position:fixed;top:0 so the browser has no reason to scroll.
+          if (xtermTa) xtermTa.inputMode = 'none'
+          if (inputRef.current) { inputRef.current.inputMode = 'text'; inputRef.current.focus() }
         }
       }
     }
@@ -1567,23 +1566,72 @@ export default function Terminal({ token }: Props) {
     }
     const vv = window.visualViewport
     if (!vv) return
-    const handleResize = () => {
-      keyboardVisibleRef.current = vv.height < window.innerHeight * 0.8
-      setVvHeight(Math.round(vv.height))
+
+    // Cache initial innerHeight as baseline — it stays constant in pan mode
+    // where the layout viewport doesn't resize even though the keyboard is up.
+    const initialInnerHeight = window.innerHeight
+
+    const handleViewportChange = () => {
+      const vh = Math.round(vv.height)
+
+      // Detect keyboard via the gap between layout viewport bottom and visual
+      // viewport bottom. This handles both modes correctly:
+      //   resize mode: offsetTop = 0, height shrinks  → gap = keyboard height
+      //   pan mode:    offsetTop > 0, height unchanged → gap = keyboard height
+      const keyboardHeight = Math.max(0, initialInnerHeight - vv.height - vv.offsetTop)
+      keyboardVisibleRef.current = keyboardHeight > 100
+
+      setVvHeight(vh)
     }
-    handleResize()
-    vv.addEventListener('resize', handleResize)
-    return () => vv.removeEventListener('resize', handleResize)
+
+    handleViewportChange()
+
+    // Listen to both resize and scroll: Android foldables often fire "scroll"
+    // instead of "resize" when the keyboard pans the viewport up.
+    vv.addEventListener('resize', handleViewportChange)
+    vv.addEventListener('scroll', handleViewportChange)
+
+    // Fallback: some OEM browsers only fire window.resize
+    window.addEventListener('resize', handleViewportChange)
+
+    // Safety net: re-check on any focus change — covers browsers that don't
+    // fire visualViewport events at all when the IME opens.
+    const onFocusIn = () => {
+      // Delay: let the browser finish its IME layout before reading metrics
+      setTimeout(handleViewportChange, 100)
+    }
+    document.addEventListener('focusin', onFocusIn)
+
+    return () => {
+      vv.removeEventListener('resize', handleViewportChange)
+      vv.removeEventListener('scroll', handleViewportChange)
+      window.removeEventListener('resize', handleViewportChange)
+      document.removeEventListener('focusin', onFocusIn)
+    }
   }, [isWidePC])
 
-  // Layer 2: Global focusin guard — blur any input that triggers keyboard when it should be hidden
-  // This covers both our custom hidden input AND xterm's internal textarea
+  // Layer 2: Global focusin guard
+  //   keyboard hidden → blur any terminal input that would open it
+  //   keyboard visible → defend: xterm's textarea must not steal focus
+  //     (it sits at the cursor position; if focused the browser may scroll
+  //     to keep it visible, hiding the toolbar behind the keyboard)
   useEffect(() => {
     if (isWidePC) return
     function handleFocusin(e: FocusEvent) {
-      if (keyboardVisibleRef.current) return
       const target = e.target as HTMLElement
       const xtermTa = termRef.current?.textarea
+
+      if (keyboardVisibleRef.current) {
+        // Keyboard is up via the hidden input. Defend against xterm textarea
+        // focus — it would cause a page scroll that hides the toolbar.
+        if (xtermTa && target === xtermTa) {
+          target.blur()
+          inputRef.current?.focus()
+        }
+        return
+      }
+
+      // Keyboard should NOT be visible: blur any terminal-related input
       if (target === inputRef.current || (xtermTa && target === xtermTa)) {
         target.blur()
       }
@@ -1705,7 +1753,12 @@ export default function Terminal({ token }: Props) {
   }
 
   return (
-    <div className="flex flex-col w-full relative" style={{ height: vvHeight ?? '100dvh' }}>
+    <div
+      className={`flex flex-col w-full ${isWidePC ? 'relative' : ''}`}
+      style={isWidePC
+        ? { height: vvHeight ?? '100dvh' }
+        : { position: 'fixed', top: 0, left: 0, right: 0, height: vvHeight ?? '100dvh' }
+      }>
       <input
         ref={inputRef}
         className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
