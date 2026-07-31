@@ -12,6 +12,7 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import { clampCursor, shouldCloseScrollbackOnScroll } from './terminalInteraction'
 import { terminalTextToHtml } from './terminalHistoryRendering'
 import { useAuthFetch } from './AuthSessionProvider'
 import {
@@ -493,6 +494,8 @@ export default function Terminal({ token, onAuthExpired }: Props) {
   const [composerHistoryLoading, setComposerHistoryLoading] = useState(false)
   const [composerPanelHeight, setComposerPanelHeight] = useState(0)
   const showScrollbackRef = useRef(false)
+  const scrollbackOpenedAtRef = useRef(0)
+  const scrollbackLastScrollTopRef = useRef(0)
   const scrollbackCellHeightRef = useRef<number | null>(null)
   const swipeUpAccumRef = useRef(0)
   const scrollbackOverlayRef = useRef<HTMLDivElement>(null)
@@ -981,7 +984,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
       if (composerModeRef.current !== 'composer') return false
       const textarea = composerTextareaRef.current
       if (!textarea) return false
-      const cursor = Math.max(0, Math.min(composerCursorRef.current, textarea.value.length))
+      const cursor = clampCursor(composerCursorRef.current, textarea.value)
       textarea.focus()
       textarea.selectionStart = cursor
       textarea.selectionEnd = cursor
@@ -1068,7 +1071,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
   }, [composerAppendEnter, saveComposerSettings])
 
   function setComposerDraftWithCursor(text: string, cursorPos: number, markDirty = true) {
-    const nextCursor = Math.max(0, Math.min(cursorPos, text.length))
+    const nextCursor = clampCursor(cursorPos, text)
     setComposerDraft(text)
     setComposerCursor(nextCursor)
     setComposerDraftDirty(markDirty)
@@ -1192,7 +1195,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
         const current = composerScopeRef.current
         if (!current || current.project !== scope.project || current.channelIndex !== scope.channelIndex) return
         const text = typeof draft?.text === 'string' ? draft.text : ''
-        const cursor = Math.max(0, Math.min(Number(draft?.cursorPos) || 0, text.length))
+        const cursor = clampCursor(Number(draft?.cursorPos) || 0, text)
         setComposerDraft(text)
         setComposerCursor(cursor)
         setComposerDraftDirty(false)
@@ -1262,7 +1265,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     if (!el) return
     const textarea = composerTextareaRef.current
     if (!textarea) return
-    const cursor = Math.max(0, Math.min(composerCursorRef.current, textarea.value.length))
+    const cursor = clampCursor(composerCursorRef.current, textarea.value)
     textarea.selectionStart = cursor
     textarea.selectionEnd = cursor
     textarea.focus()
@@ -1980,8 +1983,10 @@ export default function Terminal({ token, onAuthExpired }: Props) {
         seq = '\x1b[3~'
       }
 
-      if (seq && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(seq)
+      if (seq) {
+        term.focus()
+        wsRef.current?.send(seq)
+        requestAnimationFrame(() => term.refresh(0, Math.max(0, term.rows - 1)))
       }
     }
 
@@ -2604,9 +2609,18 @@ export default function Terminal({ token, onAuthExpired }: Props) {
 
   function handleOverlayScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30
-    if (selectionInsideElement(scrollbackContentRef.current)) return
-    if (atBottom) {
+    const hasSelection = selectionInsideElement(scrollbackContentRef.current) !== null
+    const shouldClose = shouldCloseScrollbackOnScroll({
+      scrollTop: el.scrollTop,
+      previousScrollTop: scrollbackLastScrollTopRef.current,
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      hasSelection,
+      openedAtMs: scrollbackOpenedAtRef.current,
+      nowMs: Date.now(),
+    })
+    scrollbackLastScrollTopRef.current = el.scrollTop
+    if (shouldClose) {
       closeScrollback()
     }
   }
@@ -2615,6 +2629,8 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     if (showScrollbackRef.current) return // already showing
     showScrollbackRef.current = true
     scrollbackRestoreRef.current = { composer: composerModeRef.current === 'composer', keyboardVisible: keyboardVisibleRef.current }
+    scrollbackOpenedAtRef.current = Date.now()
+    scrollbackLastScrollTopRef.current = 0
     swipeUpAccumRef.current = 0
     setHistorySelection(null)
     const terminal = termRef.current
@@ -2659,6 +2675,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
       // 初始滚动到距离底部 50px，避免立即触发 atBottom 检测
       const el = scrollbackOverlayRef.current
       el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 50)
+      scrollbackLastScrollTopRef.current = el.scrollTop
     }
   }, [scrollbackContent])
 
