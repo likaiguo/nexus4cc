@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { WindowStatus, STATUS_DOT_COLOR, STATUS_DOT_PULSE, STATUS_DOT_TITLE } from './windowStatus'
+import { shouldStartReorderDrag } from './terminalInteraction'
 import { useAuthFetch } from './AuthSessionProvider'
 
 /** Parse API error response into a user-friendly message.
@@ -57,6 +58,7 @@ interface ReorderDragState {
   startY: number
   pointerId: number
   dragging: boolean
+  startedFromHandle: boolean
 }
 
 interface Props {
@@ -279,7 +281,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
     }
   }, [authFetch, token, fetchChannels, t])
 
-  const beginReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>) => {
+  const beginReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>, startedFromHandle: boolean) => {
     if (e.button !== 0) return
     setChannelMenu(null)
     setProjectMenu(null)
@@ -292,21 +294,26 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
       startY: e.clientY,
       pointerId: e.pointerId,
       dragging: false,
+      startedFromHandle,
     }
     suppressClickRef.current = false
     if (kind === 'channel') setPressChannel(Number(id))
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId)
-    } catch {}
+    if (startedFromHandle) {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId)
+      } catch {}
+    }
   }
 
   const updateReorderPointer = (kind: ReorderKind, id: string, e: React.PointerEvent<HTMLElement>) => {
     const drag = reorderDragRef.current
     if (!drag || drag.kind !== kind || drag.id !== id || drag.pointerId !== e.pointerId) return
-    const dx = Math.abs(e.clientX - drag.startX)
-    const dy = Math.abs(e.clientY - drag.startY)
     if (!drag.dragging) {
-      if (dy < 8 || dy < dx) return
+      if (!shouldStartReorderDrag({
+        startedFromHandle: drag.startedFromHandle,
+        deltaX: e.clientX - drag.startX,
+        deltaY: e.clientY - drag.startY,
+      })) return
       drag.dragging = true
       suppressClickRef.current = true
       if (kind === 'project') setDraggingProject(id)
@@ -562,6 +569,25 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
       ? 'bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 shrink-0'
       : 'bg-transparent border-none text-nexus-text-2 cursor-pointer p-1 flex items-center justify-center opacity-60 transition-opacity duration-150 shrink-0'
 
+  const renderReorderHandle = (kind: ReorderKind, id: string) => (
+    <button
+      type="button"
+      className="shrink-0 bg-transparent border-none text-nexus-text-2 cursor-grab active:cursor-grabbing p-0.5 mt-0.5 touch-none flex items-center justify-center opacity-70 hover:opacity-100"
+      title="拖动排序"
+      aria-label="拖动排序"
+      onPointerDown={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        beginReorderPointer(kind, id, e, true)
+      }}
+      onPointerMove={(e) => updateReorderPointer(kind, id, e)}
+      onPointerUp={(e) => { endReorderPointer(kind, id, e) }}
+      onPointerCancel={(e) => cancelReorderPointer(kind, id, e)}
+    >
+      <Icon name="grip" size={14} />
+    </button>
+  )
+
   // ====== Shared content ======
   const content = (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -613,9 +639,9 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   data-menu-row
                   data-reorder-kind="project"
                   data-reorder-id={project.name}
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none group/item ${isActive ? 'bg-blue-500/15' : ''} ${draggingProject === project.name ? 'bg-nexus-border opacity-80' : ''}`}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-pan-y group/item ${isActive ? 'bg-blue-500/15' : ''} ${draggingProject === project.name ? 'bg-nexus-border opacity-80' : ''}`}
                   onPointerDown={(e) => {
-                    beginReorderPointer('project', project.name, e)
+                    beginReorderPointer('project', project.name, e, false)
                   }}
                   onPointerMove={(e) => updateReorderPointer('project', project.name, e)}
                   onPointerUp={(e) => {
@@ -625,6 +651,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   onPointerCancel={(e) => cancelReorderPointer('project', project.name, e)}
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) } : undefined}
                 >
+                  {renderReorderHandle('project', project.name)}
                   {renderDot(projectStatusOf(project.name))}
                   <div className="flex-1 min-w-0">
                     <div className="text-sm text-nexus-text truncate leading-tight" title={project.name}>{project.name}</div>
@@ -689,10 +716,10 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   data-menu-row
                   data-reorder-kind="channel"
                   data-reorder-id={String(channel.index)}
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${!isDesktop && pressChannel === channel.index ? 'bg-nexus-border' : ''} ${draggingChannel === channel.index ? 'bg-nexus-border opacity-80' : ''}`}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-pan-y transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${!isDesktop && pressChannel === channel.index ? 'bg-nexus-border' : ''} ${draggingChannel === channel.index ? 'bg-nexus-border opacity-80' : ''}`}
                   style={{ WebkitTouchCallout: 'none' }}
                   onPointerDown={(e) => {
-                    beginReorderPointer('channel', String(channel.index), e)
+                    beginReorderPointer('channel', String(channel.index), e, false)
                   }}
                   onPointerMove={(e) => updateReorderPointer('channel', String(channel.index), e)}
                   onPointerUp={(e) => {
@@ -703,6 +730,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   onContextMenu={isSidebar ? (e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) } : undefined}
                   onTouchEnd={(e) => { if (!isDesktop) { e.preventDefault(); handleChannelTouchEnd(channel) } }}
                 >
+                  {renderReorderHandle('channel', String(channel.index))}
                   {renderDot(status)}
                   <span className="text-nexus-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
                   <span className="flex-1 text-sm text-nexus-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>
@@ -805,9 +833,9 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   data-menu-row
                   data-reorder-kind="project"
                   data-reorder-id={project.name}
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none group/item ${isActive ? 'bg-blue-500/15' : ''} ${draggingProject === project.name ? 'bg-nexus-border opacity-80' : ''}`}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-pan-y group/item ${isActive ? 'bg-blue-500/15' : ''} ${draggingProject === project.name ? 'bg-nexus-border opacity-80' : ''}`}
                   onPointerDown={(e) => {
-                    beginReorderPointer('project', project.name, e)
+                    beginReorderPointer('project', project.name, e, false)
                   }}
                   onPointerMove={(e) => updateReorderPointer('project', project.name, e)}
                   onPointerUp={(e) => {
@@ -817,6 +845,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   onPointerCancel={(e) => cancelReorderPointer('project', project.name, e)}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, undefined, project) }}
                 >
+                  {renderReorderHandle('project', project.name)}
                   {renderDot(projectStatusOf(project.name))}
                   <div className="flex-1 min-w-0">
                     <div className="text-sm text-nexus-text truncate leading-tight" title={project.name}>{project.name}</div>
@@ -866,10 +895,10 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   data-menu-row
                   data-reorder-kind="channel"
                   data-reorder-id={String(channel.index)}
-                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-none transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${draggingChannel === channel.index ? 'bg-nexus-border opacity-80' : ''}`}
+                  className={`flex items-start gap-2 px-2.5 py-1.5 rounded cursor-pointer mb-0.5 select-none touch-pan-y transition-colors duration-75 group/item ${isActive ? 'bg-nexus-bg-2' : ''} ${draggingChannel === channel.index ? 'bg-nexus-border opacity-80' : ''}`}
                   style={{ WebkitTouchCallout: 'none' }}
                   onPointerDown={(e) => {
-                    beginReorderPointer('channel', String(channel.index), e)
+                    beginReorderPointer('channel', String(channel.index), e, false)
                   }}
                   onPointerMove={(e) => updateReorderPointer('channel', String(channel.index), e)}
                   onPointerUp={(e) => {
@@ -879,6 +908,7 @@ export default forwardRef<SessionManagerV2Handle, Props>(function SessionManager
                   onPointerCancel={(e) => cancelReorderPointer('channel', String(channel.index), e)}
                   onContextMenu={(e) => { e.preventDefault(); handleSidebarContext(e, channel, undefined) }}
                 >
+                  {renderReorderHandle('channel', String(channel.index))}
                   {renderDot(status)}
                   <span className="text-nexus-text-2 text-[13px] font-medium select-none shrink-0 mt-0">#</span>
                   <span className="flex-1 text-sm text-nexus-text truncate leading-tight min-w-0" title={channel.name}>{channel.name}</span>

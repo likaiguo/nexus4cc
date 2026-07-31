@@ -224,6 +224,8 @@ test('direct terminal Shift Enter sends line-feed and Ctrl/Cmd+V stays native', 
   const terminalSource = fs.readFileSync('frontend/src/Terminal.tsx', 'utf8')
   assert.match(terminalSource, /seq = e\.shiftKey \? '\\n' : '\\r'/)
   assert.match(terminalSource, /if \(clipboardMod && clipboardKey === 'v'\) return/)
+  assert.match(terminalSource, /wsRef\.current\?\.send\(seq\)/)
+  assert.match(terminalSource, /requestAnimationFrame\(\(\) => term\.refresh\(0, Math\.max\(0, term\.rows - 1\)\)\)/)
 })
 
 test('terminal history is explicit on PC/mobile and restores input path on close', () => {

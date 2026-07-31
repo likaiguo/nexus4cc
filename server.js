@@ -1738,11 +1738,17 @@ function reconcileLiveTmuxRegistry() {
   }
 }
 
+const TMUX_RESTORE_RECONCILE_TTL_MS = 30_000
 let restoreInProgress = false
-function restoreAndReconcileTmuxRegistry() {
+let lastRestoreReconcileAt = 0
+function restoreAndReconcileTmuxRegistry(options = {}) {
+  const force = options.force === true
   if (!nexusStore || restoreInProgress) return
+  const now = Date.now()
+  if (!force && now - lastRestoreReconcileAt < TMUX_RESTORE_RECONCILE_TTL_MS) return
   restoreInProgress = true
   try {
+    lastRestoreReconcileAt = now
     const projects = nexusStore.listTmuxProjects({ status: 'active' })
     for (const project of projects) restoreTmuxProjectSession(project)
     const channels = nexusStore.listTmuxChannels('', { status: 'active' })
@@ -3065,7 +3071,7 @@ server.listen(Number(PORT), '0.0.0.0', () => {
     execSync(`tmux set-option -g history-limit ${TMUX_HISTORY_LIMIT} 2>/dev/null || true`);
     const defaultWindowName = WORKSPACE_ROOT.replace(/^\/+|\/+$/, '').split('/').pop() || '~'
     execSync(`tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -n "${defaultWindowName}" -c "${WORKSPACE_ROOT}" "${INTERACTIVE_SHELL}"`);
-    restoreAndReconcileTmuxRegistry()
+    restoreAndReconcileTmuxRegistry({ force: true })
     console.log(`tmux session '${TMUX_SESSION}' ready`);
   } catch (e) { console.warn('tmux session init failed:', e.message); }
 });
