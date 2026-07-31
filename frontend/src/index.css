@@ -73,6 +73,21 @@
   overflow: hidden !important;
 }
 
+.terminal-history-content {
+  min-width: max-content;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  font-kerning: none;
+  font-variant-ligatures: none;
+}
+
+.terminal-wide-char {
+  display: inline-block;
+  width: 2ch;
+  text-align: center;
+}
+
 .workspace-code-editor,
 .workspace-code-editor .cm-editor {
   height: 100%;

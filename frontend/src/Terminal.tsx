@@ -11,6 +11,7 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
+import { terminalTextToHtml } from './terminalHistoryRendering'
 import { useAuthFetch } from './AuthSessionProvider'
 import {
   isAuthWebSocketClose,
@@ -88,6 +89,15 @@ function floatingSelectionPosition(rect: DOMRect | null) {
     top: Math.max(8, Math.min(rawTop, window.innerHeight - 48)),
     left: Math.max(48, Math.min(rawLeft, window.innerWidth - 48)),
   }
+}
+
+function measuredTerminalCellHeight(term: XTerm): number | null {
+  const renderLayer = term.element?.querySelector('.xterm-screen canvas')
+  const screen = term.element?.querySelector('.xterm-screen')
+  const renderedHeight = renderLayer?.getBoundingClientRect().height
+    ?? screen?.getBoundingClientRect().height
+    ?? 0
+  return renderedHeight > 0 && term.rows > 0 ? renderedHeight / term.rows : null
 }
 
 function parseColor(color: string): { r: number; g: number; b: number } | null {
@@ -179,7 +189,7 @@ function ansiToHtml(raw: string, theme: ITheme = { background: '#0f172a', foregr
 
   const flush = () => {
     if (!buf) return
-    const esc = buf.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const escaped = terminalTextToHtml(buf)
     const css: string[] = []
     const rawFg = style.inverse ? (style.bg || defaultBg) : (style.fg || defaultFg)
     const rawBg = style.inverse ? (style.fg || defaultFg) : (style.bg || defaultBg)
@@ -191,7 +201,7 @@ function ansiToHtml(raw: string, theme: ITheme = { background: '#0f172a', foregr
     if (style.italic) css.push('font-style:italic')
     if (style.underline) css.push('text-decoration:underline')
     if (style.dim) css.push('opacity:0.6')
-    out.push(css.length ? `<span style="${css.join(';')}">${esc}</span>` : esc)
+    out.push(css.length ? `<span style="${css.join(';')}">${escaped}</span>` : escaped)
     buf = ''
   }
 
@@ -478,6 +488,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
   const [composerHistoryLoading, setComposerHistoryLoading] = useState(false)
   const [composerPanelHeight, setComposerPanelHeight] = useState(0)
   const showScrollbackRef = useRef(false)
+  const scrollbackCellHeightRef = useRef<number | null>(null)
   const swipeUpAccumRef = useRef(0)
   const scrollbackOverlayRef = useRef<HTMLDivElement>(null)
   const scrollbackContentRef = useRef<HTMLPreElement>(null)
@@ -1283,6 +1294,8 @@ export default function Terminal({ token, onAuthExpired }: Props) {
       requestAnimationFrame(() => {
         const wasAtBottom = !userScrolledRef.current
         fitAddon.fit()
+        scrollbackCellHeightRef.current = measuredTerminalCellHeight(term)
+          ?? scrollbackCellHeightRef.current
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
         }
@@ -1324,6 +1337,8 @@ export default function Terminal({ token, onAuthExpired }: Props) {
         rafId = requestAnimationFrame(() => {
           const wasAtBottom = !userScrolledRef.current
           fitAddon.fit()
+          scrollbackCellHeightRef.current = measuredTerminalCellHeight(term)
+            ?? scrollbackCellHeightRef.current
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
           }
@@ -1787,7 +1802,11 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     const container = containerRef.current!
     term.open(container)
     // Defer initial fit so fonts and flex layout are fully settled
-    requestAnimationFrame(() => fitAddon.fit())
+    requestAnimationFrame(() => {
+      fitAddon.fit()
+      scrollbackCellHeightRef.current = measuredTerminalCellHeight(term)
+        ?? scrollbackCellHeightRef.current
+    })
 
     // On mobile: suppress keyboard from xterm's internal textarea until user explicitly enables it
     const xtermTextarea = term.textarea
@@ -1990,6 +2009,8 @@ export default function Terminal({ token, onAuthExpired }: Props) {
           term.options.fontSize = newSize
           localStorage.setItem(FONT_SIZE_KEY, String(newSize))
           fitAddon.fit()
+          scrollbackCellHeightRef.current = measuredTerminalCellHeight(term)
+            ?? scrollbackCellHeightRef.current
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
           }
@@ -2497,6 +2518,10 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     scrollbackRestoreRef.current = { composer: composerModeRef.current === 'composer', keyboardVisible: keyboardVisibleRef.current }
     swipeUpAccumRef.current = 0
     setHistorySelection(null)
+    const terminal = termRef.current
+    scrollbackCellHeightRef.current = terminal
+      ? measuredTerminalCellHeight(terminal) ?? scrollbackCellHeightRef.current
+      : scrollbackCellHeightRef.current
     setShowScrollback(true)
 
     // Use pre-fetched cache if available (no loading flash)
@@ -3409,11 +3434,13 @@ export default function Terminal({ token, onAuthExpired }: Props) {
       )}
       {showScrollback && (() => {
         const termTheme = termRef.current?.options.theme ?? {}
-        const termBg = (termTheme as any).background ?? '#1a1a2e'
-        const termFg = (termTheme as any).foreground ?? '#e2e8f0'
+        const termBg = termTheme.background ?? '#1a1a2e'
+        const termFg = termTheme.foreground ?? '#e2e8f0'
         const termFontSize = termRef.current?.options.fontSize ?? 14
         const termFontFamily = termRef.current?.options.fontFamily ?? 'Menlo, Monaco, monospace'
-        const termMuted = (termTheme as any).brightBlack ?? '#4a5568'
+        const termLineHeight = scrollbackCellHeightRef.current ?? termFontSize
+        const termLetterSpacing = termRef.current?.options.letterSpacing ?? 0
+        const termMuted = termTheme.brightBlack ?? '#4a5568'
         return (
           <div className="fixed inset-0 z-[500] flex flex-col" style={{ background: termBg, bottom: isWidePC ? 0 : mobileBottomInset }}>
             <GhostShield />
@@ -3424,12 +3451,14 @@ export default function Terminal({ token, onAuthExpired }: Props) {
                 className="bg-transparent border-none cursor-pointer p-1 flex items-center justify-center"
                 style={{ color: termMuted }}
                 onClick={closeScrollback}
+                title={t('common.close')}
+                aria-label={t('common.close')}
               ><Icon name="x" size={20} /></button>
             </div>
             <div
               ref={scrollbackOverlayRef}
               onScroll={handleOverlayScroll}
-              className="flex-1 overflow-y-auto py-2"
+              className="flex-1 overflow-auto py-2"
               style={{ WebkitOverflowScrolling: 'touch' }}
             >
               {scrollbackLoading ? (
@@ -3437,8 +3466,16 @@ export default function Terminal({ token, onAuthExpired }: Props) {
               ) : (
                 <pre
                   ref={scrollbackContentRef}
-                  className="m-0 p-0 whitespace-pre-wrap break-all leading-tight"
-                  style={{ fontFamily: termFontFamily, fontSize: termFontSize, color: termFg, userSelect: 'text', WebkitUserSelect: 'text' }}
+                  className="terminal-history-content m-0 p-0"
+                  style={{
+                    fontFamily: termFontFamily,
+                    fontSize: termFontSize,
+                    lineHeight: `${termLineHeight}px`,
+                    letterSpacing: termLetterSpacing,
+                    color: termFg,
+                    userSelect: 'text',
+                    WebkitUserSelect: 'text',
+                  }}
                   dangerouslySetInnerHTML={{ __html: ansiToHtml(scrollbackContent, termTheme) }}
                 />
               )}
