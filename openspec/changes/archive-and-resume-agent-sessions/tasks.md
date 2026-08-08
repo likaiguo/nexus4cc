@@ -27,3 +27,12 @@
 - [x] 4.4 Run visual/manual QA for the archive UI.
 - [x] 4.5 Restart the `nexus` service and verify the service is reachable, rolling back if unreachable.
 - [x] 4.6 Commit only the files related to this change.
+
+## 5. Native History Linking and Quick Reply
+
+- [x] 5.1 Add tests for native history discovery, durable channel links, and reconcile metadata preservation.
+- [x] 5.2 Add local Codex/OMO and Claude-compatible history discovery with deterministic live-channel backfill.
+- [x] 5.3 Persist native agent session links and resume directly from channel metadata after restart.
+- [x] 5.4 Merge native histories into the archive API surface and add reuse-or-resume quick reply behavior.
+- [x] 5.5 Update the history panel to show linked native sessions and open the composer after continue reply.
+- [x] 5.6 Run backend/frontend verification, browser QA, restart `nexus`, and verify accessibility with rollback on failure.

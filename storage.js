@@ -408,6 +408,20 @@ export class NexusStore {
       CREATE INDEX IF NOT EXISTS idx_agent_session_archives_created
         ON agent_session_archives(created_at DESC);
 
+      CREATE TABLE IF NOT EXISTS agent_session_links (
+        launcher TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        channel_index INTEGER NOT NULL,
+        cwd TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        linked_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (launcher, agent_session_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_session_links_channel
+        ON agent_session_links(project, channel_index, updated_at DESC);
+
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         status TEXT,
@@ -1093,14 +1107,15 @@ export class NexusStore {
     const channelIndex = normalizeChannelIndex(channel.channelIndex ?? channel.index)
     const existing = this.getTmuxChannel(project, channelIndex)
     const preserve = Boolean(opts.preserveExistingLauncher)
+    const revived = existing?.status === 'closed' && normalizeRecordStatus(channel.status ?? 'active') === 'active'
     const ts = nowIso()
-    const launcher = preserve && existing?.launcher
+    const launcher = preserve && !revived && existing?.launcher
       ? existing.launcher
       : normalizeLauncher(channel.launcher ?? existing?.launcher, 'bash')
-    const originalLauncher = preserve && existing?.originalLauncher
+    const originalLauncher = preserve && !revived && existing?.originalLauncher
       ? existing.originalLauncher
       : String(channel.originalLauncher ?? existing?.originalLauncher ?? '')
-    const profile = preserve && existing?.profile
+    const profile = preserve && !revived && existing?.profile
       ? existing.profile
       : String(channel.profile ?? existing?.profile ?? '')
     const row = {
@@ -1112,10 +1127,12 @@ export class NexusStore {
       originalLauncher,
       profile,
       status: normalizeRecordStatus(channel.status ?? existing?.status ?? 'active'),
-      createdAt: existing?.createdAt || ts,
+      createdAt: revived ? ts : existing?.createdAt || ts,
       updatedAt: ts,
       restoredAt: channel.restoredAt ?? existing?.restoredAt ?? null,
-      metadata: channel.metadata ?? existing?.metadata ?? {},
+      metadata: preserve && !revived
+        ? { ...(existing?.metadata || {}), ...(channel.metadata || {}) }
+        : channel.metadata ?? existing?.metadata ?? {},
     }
     this.db.prepare(`
       INSERT INTO tmux_channels (
@@ -1211,6 +1228,10 @@ export class NexusStore {
         .run(newName, newName, ts, oldName)
       this.db.prepare('UPDATE tmux_channels SET project = ?, updated_at = ? WHERE project = ?')
         .run(newName, ts, oldName)
+      this.db.prepare('UPDATE agent_session_links SET project = ?, updated_at = ? WHERE project = ?')
+        .run(newName, ts, oldName)
+      this.db.prepare('UPDATE agent_session_archives SET project = ? WHERE project = ?')
+        .run(newName, oldName)
     })
     tx()
     return 1
@@ -1338,6 +1359,69 @@ export class NexusStore {
       this.db.prepare('SELECT * FROM agent_session_archives WHERE id = ?').get(archiveId),
       { includeText: true },
     )
+  }
+
+  mapAgentSessionLinkRow(row) {
+    if (!row) return null
+    return {
+      launcher: row.launcher,
+      agentSessionId: row.agent_session_id,
+      project: row.project,
+      channelIndex: row.channel_index,
+      cwd: row.cwd || '',
+      source: row.source || '',
+      linkedAt: row.linked_at,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  upsertAgentSessionLink(link = {}) {
+    const launcher = normalizeLauncher(link.launcher, '')
+    const agentSessionId = String(link.agentSessionId || '').trim()
+    const project = normalizeProjectName(link.project)
+    if (!launcher) throw new Error('launcher required')
+    if (!agentSessionId) throw new Error('agent session id required')
+    if (!project) throw new Error('project required')
+    const existing = this.getAgentSessionLink(launcher, agentSessionId)
+    const ts = nowIso()
+    this.db.prepare(`
+      INSERT INTO agent_session_links (
+        launcher, agent_session_id, project, channel_index, cwd, source, linked_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(launcher, agent_session_id) DO UPDATE SET
+        project = excluded.project,
+        channel_index = excluded.channel_index,
+        cwd = excluded.cwd,
+        source = excluded.source,
+        updated_at = excluded.updated_at
+    `).run(
+      launcher,
+      agentSessionId,
+      project,
+      normalizeChannelIndex(link.channelIndex),
+      String(link.cwd || ''),
+      String(link.source || ''),
+      existing?.linkedAt || ts,
+      ts,
+    )
+    return this.getAgentSessionLink(launcher, agentSessionId)
+  }
+
+  getAgentSessionLink(launcher = '', agentSessionId = '') {
+    const normalizedLauncher = normalizeLauncher(launcher, '')
+    const normalizedId = String(agentSessionId || '').trim()
+    if (!normalizedLauncher || !normalizedId) return null
+    return this.mapAgentSessionLinkRow(this.db.prepare(`
+      SELECT * FROM agent_session_links WHERE launcher = ? AND agent_session_id = ?
+    `).get(normalizedLauncher, normalizedId))
+  }
+
+  listAgentSessionLinks({ project = '' } = {}) {
+    const projectName = normalizeProjectName(project)
+    const rows = projectName
+      ? this.db.prepare('SELECT * FROM agent_session_links WHERE project = ? ORDER BY updated_at DESC').all(projectName)
+      : this.db.prepare('SELECT * FROM agent_session_links ORDER BY updated_at DESC').all()
+    return rows.map(row => this.mapAgentSessionLinkRow(row))
   }
 
   mapAttentionEventRow(row) {

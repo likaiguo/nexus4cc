@@ -107,6 +107,13 @@ Spacing follows Tailwind's 4px unit.
 - **Accessibility**: content remains selectable text; close action is always available.
 - **Motion**: none required.
 
+### Session History Panel
+- **Structure**: full-screen compact overlay with a project-scoped history list, selected-session metadata, transcript or native prompt preview, snapshot action, and one primary continue-reply action.
+- **States**: loading, empty, native history, archived transcript, linked active channel, linked closed channel, restoring, and error.
+- **Spacing**: reuse dense 8-12px panel and row spacing; list and detail remain independently scrollable.
+- **Accessibility**: every history row is a button, linked status has a text alternative, transcript remains selectable, and continue reply moves focus to the Composer after channel activation.
+- **Motion**: none required.
+
 ## 6. Motion & Interaction
 
 | Type | Duration | Easing | Usage |

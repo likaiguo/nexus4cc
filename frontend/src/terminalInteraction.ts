@@ -23,8 +23,20 @@ export interface TextRange {
   readonly endOffset: number
 }
 
+interface TerminalKeyFocusState {
+  readonly activeElement: object | null
+  readonly bodyElement: object
+  readonly terminalContainsFocus: boolean
+}
+
 export function clampCursor(cursor: number, text: string): number {
   return Math.max(0, Math.min(cursor, text.length))
+}
+
+export function shouldCaptureGlobalTerminalKey(state: TerminalKeyFocusState): boolean {
+  return state.terminalContainsFocus
+    || state.activeElement === null
+    || state.activeElement === state.bodyElement
 }
 
 export function findLastTextRange(text: string, selectedText: string): TextRange | null {

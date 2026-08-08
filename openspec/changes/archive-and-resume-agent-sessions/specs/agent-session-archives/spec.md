@@ -80,3 +80,33 @@ Nexus SHALL provide a compact UI surface for browsing, reading, and restoring se
 #### Scenario: Restore archive from UI
 - **WHEN** a user invokes restore for an archive from the archive UI
 - **THEN** Nexus SHALL request archive restore and switch to or expose the restored tmux channel
+
+### Requirement: Native agent histories remain available after restart or close
+Nexus SHALL discover resumable local agent histories independently of live tmux process state and persist explicit links between native session ids and Nexus channels.
+
+#### Scenario: List Codex/OMO history after service restart
+- **WHEN** an authenticated user opens session history for a project after Nexus restarts
+- **THEN** Nexus SHALL list resumable Codex/OMO threads whose recorded cwd matches the project cwd
+- **AND** linked channel metadata SHALL identify the previously associated project and channel when known
+
+#### Scenario: Reconciliation preserves a native session link
+- **WHEN** Nexus reconciles a live tmux channel that already has an agent session id
+- **THEN** Nexus SHALL retain that id and its durable channel link
+- **AND** later restart recovery SHALL use that id in the launcher's native resume command
+
+#### Scenario: Backfill a live channel link
+- **WHEN** a live agent channel has no persisted native session id
+- **THEN** Nexus SHALL match local history by launcher, cwd, and the live agent process start time when available
+- **AND** Nexus SHALL persist the exact matched session id before relying on it for future restore
+
+### Requirement: History supports one-click continue reply
+Nexus SHALL allow a user to continue a resumable native history directly from the history list.
+
+#### Scenario: Continue an active linked history
+- **WHEN** a user chooses continue reply for a history whose linked channel is still live
+- **THEN** Nexus SHALL return the existing project and channel without creating a duplicate agent process
+
+#### Scenario: Continue a closed linked history
+- **WHEN** a user chooses continue reply for a history with no live linked channel
+- **THEN** Nexus SHALL create a new channel using the exact native session id
+- **AND** Nexus SHALL switch to the channel and expose an immediately focusable reply composer

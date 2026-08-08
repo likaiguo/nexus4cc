@@ -12,8 +12,9 @@ import SessionFAB from './SessionFAB'
 import GhostShield from './GhostShield'
 import { Icon } from './icons'
 import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowStatus'
-import { clampCursor, shouldCloseScrollbackOnScroll } from './terminalInteraction'
+import { clampCursor, shouldCaptureGlobalTerminalKey, shouldCloseScrollbackOnScroll } from './terminalInteraction'
 import { terminalTextToHtml } from './terminalHistoryRendering'
+import { completeSessionContinuation } from './sessionHistory'
 import { useAuthFetch } from './AuthSessionProvider'
 import {
   isAuthWebSocketClose,
@@ -276,7 +277,7 @@ const WorkspaceBrowser = lazy(() => import('./WorkspaceBrowser'))
 const GeneralSettings = lazy(() => import('./GeneralSettings'))
 const AttentionCenter = lazy(() => import('./AttentionCenter'))
 const QuickPhrasesPanel = lazy(() => import('./QuickPhrasesPanel'))
-const SessionArchivePanel = lazy(() => import('./SessionArchivePanel'))
+const SessionHistoryPanel = lazy(() => import('./SessionHistoryPanel'))
 
 interface TmuxWindow {
   index: number
@@ -461,6 +462,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
   const [showAttentionCenter, setShowAttentionCenter] = useState(false)
   const [showQuickPhrases, setShowQuickPhrases] = useState(false)
   const [showSessionArchives, setShowSessionArchives] = useState(false)
+  const sessionHistoryReturnFocusRef = useRef<HTMLElement | null>(null)
   const [attentionCount, setAttentionCount] = useState(0)
   const [showNewSession, setShowNewSession] = useState(false)
   const [showNewWindow, setShowNewWindow] = useState(false)
@@ -1577,6 +1579,25 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     setShowNewSession(true)
   }
 
+  function openSessionHistory() {
+    sessionHistoryReturnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    setShowSessionArchives(true)
+  }
+
+  function closeSessionHistory() {
+    const returnFocus = sessionHistoryReturnFocusRef.current
+    setShowSessionArchives(false)
+    sessionHistoryReturnFocusRef.current = null
+    returnFocus?.focus()
+  }
+
+  function closeSessionHistoryForContinuation() {
+    sessionHistoryReturnFocusRef.current = null
+    setShowSessionArchives(false)
+  }
+
   function handleCreateSession(path: string, shellType: 'claude' | 'codex' | 'bash', profile?: string) {
     setShowNewSession(false)
     createSession(path, shellType, profile)
@@ -1593,8 +1614,8 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     setTimeout(() => sessionManagerRef.current?.refresh(), 500)
   }
 
-  async function handleSwitchSession(newSession: string, lastChannel?: number | null, options: { syncUrl?: boolean } = {}) {
-    const { syncUrl = true } = options
+  async function handleSwitchSession(newSession: string, lastChannel?: number | null, options: { syncUrl?: boolean; openComposerAfterSwitch?: boolean } = {}) {
+    const { syncUrl = true, openComposerAfterSwitch = false } = options
     const switchSeq = ++projectSwitchSeqRef.current
     ;(async () => {
       try {
@@ -1609,6 +1630,8 @@ export default function Terminal({ token, onAuthExpired }: Props) {
         await attachResolvedChannel(newSession, targetChannel)
         if (switchSeq !== projectSwitchSeqRef.current) return
         applyResolvedLocation(newSession, targetChannel, wins, { syncUrl })
+        if (openComposerAfterSwitch) openComposer()
+        if (openComposerAfterSwitch) openComposer()
       } catch {
         if (switchSeq !== projectSwitchSeqRef.current) return
         fetchWindows()
@@ -1878,15 +1901,13 @@ export default function Terminal({ token, onAuthExpired }: Props) {
       // 仅在PC宽屏模式处理
       if (window.innerWidth < 1024) return
 
-      // 焦点在终端容器外的 input/textarea/contenteditable 时不拦截
-      // 用 activeElement 而非 overlay 状态变量，避免 stale closure 问题
       const activeEl = document.activeElement
       const isXtermInput = containerRef.current?.contains(activeEl)
-      if (!isXtermInput && activeEl && (
-        activeEl.tagName === 'INPUT' ||
-        activeEl.tagName === 'TEXTAREA' ||
-        (activeEl as HTMLElement).isContentEditable
-      )) return
+      if (!shouldCaptureGlobalTerminalKey({
+        activeElement: activeEl,
+        bodyElement: document.body,
+        terminalContainsFocus: isXtermInput === true,
+      })) return
 
       // 可打印字符（无修饰键）：不拦截，让 xterm 原生处理 → onData 回调发送
       // 这样浏览器 IME 才能正常工作（compositionstart → compositionend → onData）
@@ -2714,7 +2735,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     onOpenFiles: () => setShowFiles(true),
     onOpenWorkspace: () => openWorkspaceBrowser(),
     onOpenQuickPhrases: () => setShowQuickPhrases(true),
-    onOpenSessionArchives: () => setShowSessionArchives(true),
+    onOpenSessionArchives: openSessionHistory,
     onOpenTerminalHistory: openTerminalHistory,
     onUpload: handleFileUpload,
     onUploadFile: uploadFile,
@@ -2888,7 +2909,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
                     </button>
 
                     <button
-                      onClick={(e) => { e.stopPropagation(); setShowSessionArchives(true); }}
+                      onClick={(e) => { e.stopPropagation(); openSessionHistory(); }}
                       className="w-12 h-10 bg-transparent border-none text-nexus-text-2 flex items-center justify-center cursor-pointer"
                       title={t('sessionArchives.title')}
                       aria-label={t('sessionArchives.title')}
@@ -3456,15 +3477,15 @@ export default function Terminal({ token, onAuthExpired }: Props) {
         )}
         {showSessionArchives && (
           <Suspense fallback={null}>
-            <SessionArchivePanel
+            <SessionHistoryPanel
               token={token}
               currentProject={activeTmuxSession}
               currentChannelIndex={activeWindowIndex}
-              onClose={() => setShowSessionArchives(false)}
-              onRestored={(project, channelIndex) => {
-                setShowSessionArchives(false)
-                handleSwitchSession(project, channelIndex)
-              }}
+              onClose={closeSessionHistory}
+              onContinued={target => completeSessionContinuation(target, {
+                closePanel: closeSessionHistoryForContinuation,
+                switchSession: handleSwitchSession,
+              })}
             />
           </Suspense>
         )}

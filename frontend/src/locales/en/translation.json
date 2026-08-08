@@ -154,7 +154,19 @@
       "moveDown": "Move down"
     },
     "sessionArchives": {
-      "title": "Session archives"
+      "title": "Session history",
+      "currentProject": "Current project {{project}}",
+      "snapshot": "Save snapshot",
+      "snapshotting": "Saving...",
+      "continueReply": "Continue reply",
+      "resuming": "Resuming...",
+      "activeLink": "Channel active",
+      "closedLink": "Channel closed",
+      "empty": "No session history yet. Save a snapshot of the current channel to begin.",
+      "noSelection": "No session selected",
+      "noContent": "No session content is available.",
+      "nativePreview": "Native session prompt",
+      "archiveTranscript": "Terminal archive"
     },
     "toolbarPresets": {
     "factory": "Factory",
