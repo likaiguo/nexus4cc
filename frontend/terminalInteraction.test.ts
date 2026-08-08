@@ -3,8 +3,9 @@ import {
   clampCursor,
   findLastTextRange,
   shouldCloseScrollbackOnScroll,
+  shouldCaptureGlobalTerminalKey,
   shouldStartReorderDrag,
-} from './src/terminalInteraction'
+} from './src/terminalInteraction.ts'
 
 let passed = 0
 let failed = 0
@@ -106,6 +107,27 @@ test('clampCursor keeps composer selection inside text bounds', () => {
   assert.equal(clampCursor(-5, 'abc'), 0)
   assert.equal(clampCursor(2, 'abc'), 2)
   assert.equal(clampCursor(9, 'abc'), 3)
+})
+
+test('global terminal key capture leaves focused application controls untouched', () => {
+  const bodyElement = { kind: 'body' }
+  const historyButton = { kind: 'history-button' }
+
+  assert.equal(shouldCaptureGlobalTerminalKey({
+    activeElement: historyButton,
+    bodyElement,
+    terminalContainsFocus: false,
+  }), false)
+  assert.equal(shouldCaptureGlobalTerminalKey({
+    activeElement: bodyElement,
+    bodyElement,
+    terminalContainsFocus: false,
+  }), true)
+  assert.equal(shouldCaptureGlobalTerminalKey({
+    activeElement: historyButton,
+    bodyElement,
+    terminalContainsFocus: true,
+  }), true)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

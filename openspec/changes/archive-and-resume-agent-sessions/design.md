@@ -67,6 +67,16 @@ Add a panel matching the existing Nexus dense command-center style. It lists arc
 
 **Alternative considered:** Put archives only in the existing history overlay. That conflates live scrollback with durable closed-session records.
 
+### D6. Native agent history is indexed locally and linked explicitly
+
+Read resumable Codex/OMO threads from `$CODEX_HOME/state_*.sqlite` and Claude-compatible prompt history from the local Claude/cfuse history files. Store the durable `(launcher, agent session id) -> (project, channel)` relationship in Nexus SQLite and mirror the id in channel metadata.
+
+The history panel merges native history with Nexus terminal archives. A native history record remains available even when Nexus missed a pre-close scrollback snapshot, while an archive remains the source for captured terminal text. Continuing a history reuses its live linked channel when possible; otherwise it creates a new channel with the launcher's native resume command and updates the durable link.
+
+**Rationale:** Parsing a UUID from terminal text is incidental and fails whenever the TUI does not print its id. Native indexes are the durable conversation source, while an explicit Nexus link survives restart and avoids repeated fuzzy matching.
+
+**Alternative considered:** Match by cwd on every restore. Multiple concurrent sessions can share a cwd, so cwd is suitable only for discovery and process-start-time backfill, not as the persisted identity.
+
 ## Risks / Trade-offs
 
 - **Agent session id detection may be incomplete** -> Store best-effort ids when available and still persist raw scrollback so archive viewing works for every launcher.
@@ -84,6 +94,7 @@ Add a panel matching the existing Nexus dense command-center style. It lists arc
 5. Add frontend archive panel and toolbar/session entry.
 6. Add backend and frontend tests, run build/type checks, and perform visual/manual QA.
 7. Deploy by restarting the `nexus` service and verify it is reachable. If unreachable after restart, rollback code immediately while preserving `~/.nexus4cc/data`.
+8. Backfill native session links for active channels from launcher process start time plus cwd, then persist the exact id so later restores do not repeat inference.
 
 ## Open Questions
 

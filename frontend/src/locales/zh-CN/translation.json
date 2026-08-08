@@ -144,7 +144,19 @@
       "moveDown": "下移"
     },
     "sessionArchives": {
-      "title": "会话归档"
+      "title": "历史会话",
+      "currentProject": "当前项目 {{project}}",
+      "snapshot": "保存快照",
+      "snapshotting": "保存中...",
+      "continueReply": "继续回复",
+      "resuming": "恢复中...",
+      "activeLink": "频道运行中",
+      "closedLink": "频道已关闭",
+      "empty": "暂无历史会话。可先保存当前频道快照。",
+      "noSelection": "未选择历史会话",
+      "noContent": "没有可显示的历史内容。",
+      "nativePreview": "原生会话提示",
+      "archiveTranscript": "终端归档"
     },
     "toolbarPresets": {
     "factory": "出厂",

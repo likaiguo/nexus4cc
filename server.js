@@ -16,11 +16,18 @@ import { createPasswordManager, loadEnvFile } from './authPassword.js';
 import { copyMissingLegacyData, resolveNexusDataDir } from './dataDir.js';
 import { buildLauncherCommand, collectProxyVars, inferLauncher } from './launcher.js';
 import { buildSessionArchiveInput, plainTerminalText } from './sessionArchive.js';
+import { agentSessionLinkMatchesChannel, findBestAgentSession, listAgentSessions, mergeAgentSessionHistory } from './agentSessions.js';
+import { findLiveAgentProcess, parseProcessTable } from './agentProcesses.js';
+import { handlePtyExit } from './ptyLifecycle.js';
+import { isSafeTmuxSessionName } from './tmuxNames.js';
+import { resolveTerminalEnvironment } from './terminalEnvironment.js';
+import { missingTmuxChannels, missingTmuxProjects, reconcileTmuxProjectSnapshot } from './tmuxReconciliation.js';
 import { WorkspaceFileError, readEditableWorkspaceFile, saveEditableWorkspaceFile } from './workspaceFiles.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = join(__dirname, '.env');
 loadEnvFile(ENV_FILE);
+Object.assign(process.env, resolveTerminalEnvironment(process.env));
 
 // Runtime data lives outside the code checkout by default. Repo-local data is
 // kept only as a legacy migration source.
@@ -1259,6 +1266,37 @@ app.get('/api/session-archives', authMiddleware, (req, res) => {
   }
 })
 
+app.get('/api/agent-session-history', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  const project = String(req.query.project || '')
+  if (!project) return res.status(400).json({ error: 'project required' })
+  try {
+    res.json({ items: buildAgentSessionHistory(project, req.query.limit || 200) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/agent-session-history/reply', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  const project = String(req.body?.project || '')
+  const historyKey = String(req.body?.historyKey || '')
+  if (!project || !historyKey) return res.status(400).json({ error: 'project and historyKey required' })
+  try {
+    const item = buildAgentSessionHistory(project, 500).find(history => history.key === historyKey)
+    if (!item) return res.status(404).json({ error: 'history not found' })
+    if (item.agentSessionId) {
+      const restored = continueAgentSession({ project, history: item })
+      return res.json({ ok: true, historyKey, ...restored })
+    }
+    const archive = item.archiveId ? nexusStore.getSessionArchive(item.archiveId) : null
+    if (!archive) return res.status(409).json({ error: 'history is not resumable' })
+    res.json({ ok: true, historyKey, ...restoreSessionArchive(archive) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.get('/api/session-archives/:id', authMiddleware, (req, res) => {
   if (!nexusStore?.getSessionArchive) return res.status(503).json({ error: 'sqlite unavailable' })
   try {
@@ -1311,62 +1349,15 @@ function restoreSessionArchive(archive) {
   const project = archive.project || TMUX_SESSION
   const cwd = archive.cwd || WORKSPACE_ROOT
   const name = safeTmuxName(`restore-${archive.windowName || archive.launcher || 'archive'}`, 'restore')
-  const launch = launcherContext({
-    launcher: archive.launcher,
-    profile: archive.profile,
-    cwd,
-    agentSessionId: archiveResumeId(archive),
-  })
-  let channelIndex = 0
-  if (!tmuxSessionExists(project)) {
-    const args = [
-      'new-session', '-d', '-P', '-F', '#{window_index}',
-      '-s', project,
-      '-n', name,
-      '-c', cwd,
-      '-e', `NEXUS_CWD=${cwd}`,
-    ]
-    for (const [key, value] of Object.entries(launch.proxyVars)) args.push('-e', `${key}=${value}`)
-    args.push(launch.command)
-    const out = execFileSync('tmux', args, { encoding: 'utf8', stdio: 'pipe' }).trim()
-    const parsed = Number(out)
-    if (Number.isFinite(parsed)) channelIndex = parsed
-  } else {
-    const out = execFileSync('tmux', [
-      'new-window',
-      '-P', '-F', '#{window_index}',
-      '-t', project,
-      '-c', cwd,
-      '-n', name,
-      launch.command,
-    ], { encoding: 'utf8', stdio: 'pipe' }).trim()
-    const parsed = Number(out)
-    if (Number.isFinite(parsed)) channelIndex = parsed
-  }
-  nexusStore?.upsertTmuxProject?.({
-    name: project,
-    cwd,
-    displayName: project,
-    launcher: archive.launcher,
-    profile: archive.profile,
-    lastChannelIndex: channelIndex,
-    status: 'active',
-  }, { preserveExistingLauncher: true })
-  nexusStore?.upsertTmuxChannel?.({
+  return createResumedAgentChannel({
     project,
-    channelIndex,
-    name,
     cwd,
     launcher: archive.launcher,
     profile: archive.profile,
-    status: 'active',
-    metadata: {
-      source: 'archive-restore',
-      restoredFromArchiveId: archive.id,
-      agentSessionId: archiveResumeId(archive),
-    },
+    name,
+    agentSessionId: archiveResumeId(archive),
+    metadata: { source: 'archive-restore', restoredFromArchiveId: archive.id },
   })
-  return { project, index: channelIndex, name, cwd, shell_type: archive.launcher, profile: archive.profile || null }
 }
 
 // Remove "ghost frame" duplicates from scrollback caused by full-screen app re-renders.
@@ -1559,26 +1550,27 @@ function tmuxWindowExists(sessionName, index) {
 
 function liveChannelInfo(sessionName, channelIndex) {
   const stored = nexusStore?.getTmuxChannel?.(sessionName, channelIndex)
-  if (stored) return stored
   try {
     const out = execFileSync('tmux', [
       'display', '-p',
       '-t', `${sessionName}:${channelIndex}`,
-      '#{window_name}|#{pane_current_path}|#{pane_current_command}',
+      '#{window_name}|#{pane_current_path}|#{pane_current_command}|#{pane_pid}',
     ], { encoding: 'utf8', stdio: 'pipe' }).trim()
-    const [name = '', cwd = '', paneCommand = ''] = out.split('|')
+    const [name = '', cwd = '', paneCommand = '', panePid = ''] = out.split('|')
+    const inferredLauncher = inferLauncher({ windowName: name, paneCommand })
     return {
+      ...(stored || {}),
       project: sessionName,
       channelIndex: Number(channelIndex),
-      name,
-      cwd: cwd || WORKSPACE_ROOT,
-      launcher: inferLauncher({ windowName: name, paneCommand }),
-      profile: '',
-      metadata: { source: 'tmux-live-archive', paneCommand },
-      createdAt: null,
+      name: name || stored?.name || '',
+      cwd: cwd || stored?.cwd || WORKSPACE_ROOT,
+      launcher: inferredLauncher !== 'bash' ? inferredLauncher : stored?.launcher || 'bash',
+      profile: stored?.profile || '',
+      metadata: { ...(stored?.metadata || {}), paneCommand, panePid },
+      createdAt: stored?.createdAt || null,
     }
   } catch {
-    return {
+    return stored || {
       project: sessionName,
       channelIndex: Number(channelIndex),
       name: '',
@@ -1591,13 +1583,71 @@ function liveChannelInfo(sessionName, channelIndex) {
   }
 }
 
+function processTableSnapshot() {
+  try {
+    return parseProcessTable(execFileSync('ps', ['-axo', 'pid=,ppid=,lstart=,command='], { encoding: 'utf8', stdio: 'pipe' }))
+  } catch {
+    return []
+  }
+}
+
+function liveAgentProcess(channel, processes = null) {
+  const panePid = Number(channel?.metadata?.panePid)
+  if (!Number.isFinite(panePid) || panePid <= 0) return null
+  return findLiveAgentProcess({ panePid, processes: processes || processTableSnapshot() })
+}
+
+function persistChannelAgentSession(channel, session, source) {
+  const updated = nexusStore.upsertTmuxChannel({
+    ...channel,
+    launcher: session.launcher,
+    metadata: { ...(channel.metadata || {}), agentSessionId: session.id },
+  })
+  nexusStore.upsertAgentSessionLink({
+    launcher: session.launcher,
+    agentSessionId: session.id,
+    project: updated.project,
+    channelIndex: updated.channelIndex,
+    cwd: updated.cwd,
+    source,
+  })
+  return updated
+}
+
+function resolveChannelAgentSession(channel, sessions = null, processes = null) {
+  const metadataId = String(channel?.metadata?.agentSessionId || '').trim()
+  if (metadataId) {
+    persistChannelAgentSession(channel, { id: metadataId, launcher: channel.launcher }, 'channel-metadata')
+    return channel
+  }
+  const process = liveAgentProcess(channel, processes)
+  const launcher = process?.launcher || channel.launcher
+  const available = sessions || listAgentSessions({ cwd: channel.cwd, limit: 500 })
+  if (process?.sessionId) {
+    return persistChannelAgentSession(channel, { id: process.sessionId, launcher }, 'process-command')
+  }
+  const linkedSessionKeys = new Set(
+    nexusStore.listAgentSessionLinks()
+      .filter(link => link.project !== channel.project || link.channelIndex !== channel.channelIndex)
+      .map(link => `${link.launcher}:${link.agentSessionId}`),
+  )
+  const match = findBestAgentSession({
+    channel: { ...channel, launcher },
+    sessions: available,
+    processStartedAt: process?.startedAt || null,
+    linkedSessionKeys,
+  })
+  return match ? persistChannelAgentSession(channel, match, process ? 'process-start-match' : 'channel-start-match') : channel
+}
+
 async function createChannelArchive({ sessionName, channelIndex, status = 'snapshot' }) {
   if (!nexusStore?.createSessionArchive) throw new Error('sqlite unavailable')
   const channel = liveChannelInfo(sessionName, channelIndex)
+  const linkedChannel = resolveChannelAgentSession(channel)
   const { content } = await captureTmuxScrollback({ session: sessionName, windowIndex: channelIndex })
   const capturedText = plainTerminalText(content).trimEnd()
   return nexusStore.createSessionArchive(buildSessionArchiveInput({
-    channel,
+    channel: linkedChannel,
     capturedText,
     status,
     closedAt: status === 'closed' ? new Date().toISOString() : null,
@@ -1608,6 +1658,119 @@ function archiveResumeId(archive) {
   return String(archive?.metadata?.agentSessionId || '').trim()
 }
 
+function channelResumeId(channel) {
+  const directId = String(channel?.metadata?.agentSessionId || '').trim()
+  if (directId) return directId
+  const archiveId = String(channel?.metadata?.restoredFromArchiveId || '').trim()
+  return archiveId ? archiveResumeId(nexusStore?.getSessionArchive?.(archiveId)) : ''
+}
+
+function projectHistoryCwd(project) {
+  const storedProject = nexusStore.getTmuxProject(project)
+  if (storedProject?.cwd) return storedProject.cwd
+  const channel = nexusStore.listTmuxChannels(project, { status: 'all' }).find(entry => entry.cwd)
+  return channel?.cwd || ''
+}
+
+function buildAgentSessionHistory(project, limit) {
+  const cwd = projectHistoryCwd(project)
+  if (!cwd) return []
+  const sessions = listAgentSessions({ cwd, limit })
+  const processes = processTableSnapshot()
+  for (const channel of nexusStore.listTmuxChannels(project, { status: 'active' })) {
+    resolveChannelAgentSession(liveChannelInfo(channel.project, channel.channelIndex), sessions, processes)
+  }
+  return mergeAgentSessionHistory({
+    nativeSessions: sessions,
+    archives: nexusStore.listSessionArchives({ project, limit }),
+    links: nexusStore.listAgentSessionLinks(),
+    channels: nexusStore.listTmuxChannels('', { status: 'all' }),
+  })
+}
+
+function createResumedAgentChannel({ project, cwd, launcher, profile = '', name, agentSessionId = '', metadata = {} }) {
+  const launch = launcherContext({ launcher, profile, cwd, agentSessionId })
+  let channelIndex = 0
+  if (!tmuxSessionExists(project)) {
+    const args = [
+      'new-session', '-d', '-P', '-F', '#{window_index}',
+      '-s', project,
+      '-n', name,
+      '-c', cwd,
+      '-e', `NEXUS_CWD=${cwd}`,
+    ]
+    for (const [key, value] of Object.entries(launch.proxyVars)) args.push('-e', `${key}=${value}`)
+    args.push(launch.command)
+    const parsed = Number(execFileSync('tmux', args, { encoding: 'utf8', stdio: 'pipe' }).trim())
+    if (Number.isFinite(parsed)) channelIndex = parsed
+  } else {
+    const parsed = Number(execFileSync('tmux', [
+      'new-window', '-P', '-F', '#{window_index}', '-t', project, '-c', cwd, '-n', name, launch.command,
+    ], { encoding: 'utf8', stdio: 'pipe' }).trim())
+    if (Number.isFinite(parsed)) channelIndex = parsed
+  }
+  nexusStore.upsertTmuxProject({
+    name: project,
+    cwd,
+    displayName: project,
+    launcher,
+    profile,
+    lastChannelIndex: channelIndex,
+    status: 'active',
+  }, { preserveExistingLauncher: true })
+  nexusStore.upsertTmuxChannel({
+    project,
+    channelIndex,
+    name,
+    cwd,
+    launcher,
+    profile,
+    status: 'active',
+    metadata: { ...metadata, ...(agentSessionId ? { agentSessionId } : {}) },
+  })
+  if (agentSessionId) {
+    nexusStore.upsertAgentSessionLink({
+      launcher,
+      agentSessionId,
+      project,
+      channelIndex,
+      cwd,
+      source: String(metadata.source || 'native-history-reply'),
+    })
+  }
+  return { project, index: channelIndex, name, cwd, shell_type: launcher, profile: profile || null, reused: false }
+}
+
+function continueAgentSession({ project, history }) {
+  const link = nexusStore.getAgentSessionLink(history.launcher, history.agentSessionId)
+  if (link) {
+    const channel = nexusStore.getTmuxChannel(link.project, link.channelIndex)
+    if (agentSessionLinkMatchesChannel(link, channel)) {
+      if (!tmuxWindowExists(channel.project, channel.channelIndex)) restoreTmuxChannelWindow(channel)
+      if (tmuxWindowExists(channel.project, channel.channelIndex)) {
+        return {
+          project: channel.project,
+          index: channel.channelIndex,
+          name: channel.name,
+          cwd: channel.cwd,
+          shell_type: channel.launcher,
+          profile: channel.profile || null,
+          reused: true,
+        }
+      }
+    }
+  }
+  return createResumedAgentChannel({
+    project,
+    cwd: history.cwd || projectHistoryCwd(project) || WORKSPACE_ROOT,
+    launcher: history.launcher,
+    profile: history.profile || '',
+    name: safeTmuxName(`reply-${history.launcher}`, 'reply'),
+    agentSessionId: history.agentSessionId,
+    metadata: { source: 'native-history-reply', ...(history.archiveId ? { restoredFromArchiveId: history.archiveId } : {}) },
+  })
+}
+
 function safeTmuxName(value, fallback = 'restored') {
   return String(value || fallback).replace(/[\r\n\t\0:]/g, '').trim().slice(0, 50) || fallback
 }
@@ -1615,12 +1778,11 @@ function safeTmuxName(value, fallback = 'restored') {
 function restoreTmuxChannelWindow(channel) {
   if (!channel || !tmuxSessionExists(channel.project) || tmuxWindowExists(channel.project, channel.channelIndex)) return
   const cwd = channel.cwd || WORKSPACE_ROOT
-  const archive = channel.metadata?.restoredFromArchiveId ? nexusStore?.getSessionArchive?.(channel.metadata.restoredFromArchiveId) : null
   const launch = launcherContext({
     launcher: channel.launcher,
     profile: channel.profile,
     cwd,
-    agentSessionId: archiveResumeId(archive),
+    agentSessionId: channelResumeId(channel),
   })
   const name = safeTmuxName(channel.name, channel.profile || channel.launcher || 'restored')
   const args = [
@@ -1664,8 +1826,7 @@ function restoreTmuxProjectSession(project) {
   const launcher = firstChannel?.launcher || project.launcher || 'bash'
   const profile = firstChannel?.profile || project.profile || ''
   const name = safeTmuxName(firstChannel?.name || project.displayName || project.name, 'restored')
-  const archive = firstChannel?.metadata?.restoredFromArchiveId ? nexusStore?.getSessionArchive?.(firstChannel.metadata.restoredFromArchiveId) : null
-  const launch = launcherContext({ launcher, profile, cwd, agentSessionId: archiveResumeId(archive) })
+  const launch = launcherContext({ launcher, profile, cwd, agentSessionId: channelResumeId(firstChannel) })
   const args = [
     'new-session', '-d', '-P', '-F', '#{window_index}',
     '-s', project.name,
@@ -1712,26 +1873,14 @@ function reconcileLiveTmuxRegistry() {
   const projects = liveProjectsFromTmux(stdout)
   for (const project of projects) {
     try {
-      nexusStore.upsertTmuxProject({
-        name: project.name,
-        cwd: project.path || WORKSPACE_ROOT,
-        displayName: project.name,
-        status: 'active',
-      }, { preserveExistingLauncher: true })
       const windowsOut = execFileSync('tmux', ['list-windows', '-t', project.name, '-F', '#{window_index}|#{window_name}|#{window_active}|#{pane_current_path}|#{pane_current_command}'], { encoding: 'utf8', stdio: 'pipe' })
-      for (const channel of liveChannelsFromTmux(windowsOut)) {
-        const launcher = inferLauncher({ windowName: channel.name, paneCommand: channel.paneCommand })
-        nexusStore.upsertTmuxChannel({
-          project: project.name,
-          channelIndex: channel.index,
-          name: channel.name,
-          cwd: channel.cwd || project.path || WORKSPACE_ROOT,
-          launcher,
-          status: 'active',
-          metadata: { source: 'tmux-reconcile', paneCommand: channel.paneCommand || '' },
-        }, { preserveExistingLauncher: true })
-        if (channel.active) nexusStore.setTmuxProjectLastChannel(project.name, channel.index)
-      }
+      reconcileTmuxProjectSnapshot({
+        store: nexusStore,
+        project,
+        channels: liveChannelsFromTmux(windowsOut),
+        workspaceRoot: WORKSPACE_ROOT,
+        inferLauncher,
+      })
     } catch (err) {
       console.warn(`[Nexus] tmux registry reconcile failed for ${project.name}:`, err.message)
     }
@@ -1749,10 +1898,31 @@ function restoreAndReconcileTmuxRegistry(options = {}) {
   restoreInProgress = true
   try {
     lastRestoreReconcileAt = now
+    let sessionsOut = ''
+    try {
+      sessionsOut = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}|#{session_windows}|#{session_attached}'], { encoding: 'utf8', stdio: 'pipe' })
+    } catch {
+    }
+    const liveProjectNames = new Set(liveProjectsFromTmux(sessionsOut).map(project => project.name))
     const projects = nexusStore.listTmuxProjects({ status: 'active' })
-    for (const project of projects) restoreTmuxProjectSession(project)
+    for (const project of missingTmuxProjects(projects, liveProjectNames)) {
+      restoreTmuxProjectSession(project)
+    }
+    const liveChannelKeys = new Set()
+    for (const project of projects) {
+      try {
+        const windowsOut = execFileSync('tmux', ['list-windows', '-t', project.name, '-F', '#{window_index}'], { encoding: 'utf8', stdio: 'pipe' })
+        for (const rawIndex of windowsOut.trim().split('\n')) {
+          const channelIndex = Number(rawIndex)
+          if (Number.isFinite(channelIndex)) liveChannelKeys.add(`${project.name}:${channelIndex}`)
+        }
+      } catch {
+      }
+    }
     const channels = nexusStore.listTmuxChannels('', { status: 'active' })
-    for (const channel of channels) restoreTmuxChannelWindow(channel)
+    for (const channel of missingTmuxChannels(channels, liveChannelKeys)) {
+      restoreTmuxChannelWindow(channel)
+    }
     reconcileLiveTmuxRegistry()
   } catch (err) {
     console.warn('[Nexus] tmux registry restore failed:', err.message)
@@ -2128,23 +2298,47 @@ app.post('/api/projects/:name/rename', authMiddleware, (req, res) => {
 })
 
 // DELETE /api/projects/:name — 关闭 Project（kill tmux session）
-app.delete('/api/projects/:name', authMiddleware, (req, res) => {
-  const sessionName = req.params.name
+app.delete('/api/projects/:name', authMiddleware, async (req, res) => {
+  const sessionName = String(req.params.name || '')
+  if (!isSafeTmuxSessionName(sessionName)) {
+    return res.status(400).json({ error: 'invalid project name' })
+  }
   // 验证 session 存在
   try {
-    execSync(`tmux has-session -t ${sessionName}`)
+    execFileSync('tmux', ['has-session', '-t', sessionName], { stdio: 'pipe' })
   } catch {
     return res.status(404).json({ error: 'project not found' })
   }
-  // kill session
-  exec(`tmux kill-session -t ${sessionName}`, (err) => {
-    if (err) return res.status(500).json({ error: err.message })
+  const archives = []
+  const archiveErrors = []
+  try {
+    const indexes = execFileSync('tmux', ['list-windows', '-t', sessionName, '-F', '#{window_index}'], { encoding: 'utf8', stdio: 'pipe' })
+      .trim().split('\n').map(Number).filter(Number.isFinite)
+    const results = await Promise.allSettled(indexes.map(channelIndex => (
+      createChannelArchive({ sessionName, channelIndex, status: 'closed' })
+    )))
+    for (const [position, result] of results.entries()) {
+      if (result.status === 'fulfilled') archives.push(result.value)
+      else {
+        console.warn(`[Nexus] project archive failed for ${sessionName}:${indexes[position]}:`, result.reason)
+        archiveErrors.push({ channelIndex: indexes[position], error: 'archive failed' })
+      }
+    }
+  } catch (err) {
+    console.warn(`[Nexus] project archive enumeration failed for ${sessionName}:`, err)
+    archiveErrors.push({ channelIndex: null, error: 'archive enumeration failed' })
+  }
+  execFile('tmux', ['kill-session', '-t', sessionName], (err) => {
+    if (err) {
+      console.warn(`[Nexus] project close failed for ${sessionName}:`, err.message)
+      return res.status(500).json({ error: 'failed to close project' })
+    }
     try {
       nexusStore?.closeTmuxProject?.(sessionName)
     } catch (storeErr) {
       console.warn('[Nexus] tmux registry project close failed:', storeErr.message)
     }
-    res.json({ ok: true })
+    res.json({ ok: true, archives, ...(archiveErrors.length > 0 ? { archiveErrors } : {}) })
   })
 })
 
@@ -2752,15 +2946,7 @@ function ensureWindowPty(session, windowIndex) {
   });
 
   ptyProc.onExit(({ exitCode }) => {
-    console.log(`PTY ${actualKey} exited with code ${exitCode}`);
-    ptyMap.delete(actualKey);
-    // 如果 window 还在，重新创建
-    try {
-      const list = execFileSync('tmux', ['list-windows', '-t', safeSession, '-F', '#I'], { encoding: 'utf8', stdio: 'pipe' }).trim().split('\n');
-      if (list.includes(String(targetWindow))) {
-        setTimeout(() => ensureWindowPty(safeSession, targetWindow), 100);
-      }
-    } catch {}
+    handlePtyExit({ key: actualKey, entry, ptyMap, exitCode });
   });
 
   return { key: actualKey, entry };

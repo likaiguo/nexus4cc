@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { inferLauncher } from './launcher.js'
 import { NexusStore } from './storage.js'
+import { missingTmuxChannels, missingTmuxProjects, reconcileTmuxProjectSnapshot } from './tmuxReconciliation.js'
 
 let passed = 0
 let failed = 0
@@ -48,16 +50,76 @@ test('tmux registry upserts project and channel metadata', () => withStore(store
   assert.equal(store.getTmuxChannel('proj', 2).launcher, 'codex')
 }))
 
-test('tmux registry reconcile preserves explicit launcher metadata', () => withStore(store => {
-  store.upsertTmuxChannel({ project: 'proj', channelIndex: 0, name: 'codex', cwd: '/work', launcher: 'codex', profile: '' })
-  store.upsertTmuxChannel(
-    { project: 'proj', channelIndex: 0, name: 'renamed', cwd: '/work/next', launcher: 'bash', profile: '' },
-    { preserveExistingLauncher: true },
-  )
+test('tmux snapshot reconciliation is bounded to supplied channels and preserves native session metadata', () => withStore(store => {
+  store.upsertTmuxChannel({
+    project: 'proj', channelIndex: 0, name: 'codex', cwd: '/work', launcher: 'codex', profile: '',
+    metadata: { source: 'nexus-create-channel', agentSessionId: 'codex-session' },
+  })
+  const result = reconcileTmuxProjectSnapshot({
+    store,
+    project: { name: 'proj', path: '/work/next' },
+    channels: [{ index: 0, name: 'renamed', cwd: '/work/next', paneCommand: 'zsh', active: true }],
+    workspaceRoot: '/workspace',
+    inferLauncher,
+  })
+
+  assert.deepEqual(result, { projectCount: 1, channelCount: 1 })
   const row = store.getTmuxChannel('proj', 0)
   assert.equal(row.launcher, 'codex')
   assert.equal(row.cwd, '/work/next')
   assert.equal(row.name, 'renamed')
+  assert.equal(row.metadata.agentSessionId, 'codex-session')
+  assert.equal(row.metadata.source, 'tmux-reconcile')
+  assert.equal(store.getTmuxProject('proj').lastChannelIndex, 0)
+}))
+
+test('tmux registry does not inherit a closed channel link when an index is reused', () => withStore(store => {
+  store.upsertTmuxChannel({
+    project: 'proj', channelIndex: 0, name: 'old', cwd: '/work/old', launcher: 'codex',
+    metadata: { agentSessionId: 'old-session' },
+  })
+  store.closeTmuxChannel('proj', 0)
+  store.upsertTmuxChannel(
+    {
+      project: 'proj', channelIndex: 0, name: 'new', cwd: '/work/new', launcher: 'bash', status: 'active',
+      metadata: { source: 'tmux-reconcile', paneCommand: 'zsh' },
+    },
+    { preserveExistingLauncher: true },
+  )
+
+  const row = store.getTmuxChannel('proj', 0)
+  assert.equal(row.launcher, 'bash')
+  assert.equal(row.metadata.agentSessionId, undefined)
+  assert.equal(row.metadata.source, 'tmux-reconcile')
+}))
+
+test('agent session links persist and follow project rename', () => withStore(store => {
+  store.upsertTmuxProject({ name: 'old', cwd: '/work/project', launcher: 'codex', lastChannelIndex: 3 })
+  store.upsertTmuxChannel({ project: 'old', channelIndex: 3, name: 'codex', cwd: '/work/project', launcher: 'codex' })
+  const link = store.upsertAgentSessionLink({
+    launcher: 'codex', agentSessionId: 'native-session', project: 'old', channelIndex: 3,
+    cwd: '/work/project', source: 'process-start-match',
+  })
+  assert.equal(link.agentSessionId, 'native-session')
+  assert.equal(store.getAgentSessionLink('codex', 'native-session').project, 'old')
+
+  store.renameTmuxProject('old', 'new')
+  assert.equal(store.getAgentSessionLink('codex', 'native-session').project, 'new')
+  assert.equal(store.listAgentSessionLinks({ project: 'new' }).length, 1)
+}))
+
+test('session archives follow project rename so history remains visible', () => withStore(store => {
+  store.upsertTmuxProject({ name: 'old', cwd: '/work/project', launcher: 'codex', lastChannelIndex: 3 })
+  store.createSessionArchive({
+    project: 'old', channelIndex: 3, windowName: 'codex', cwd: '/work/project', launcher: 'codex',
+    status: 'closed', capturedText: 'persisted transcript', metadata: { agentSessionId: 'native-session' },
+  })
+
+  store.renameTmuxProject('old', 'new')
+
+  assert.equal(store.listSessionArchives({ project: 'old' }).length, 0)
+  assert.equal(store.listSessionArchives({ project: 'new' }).length, 1)
+  assert.equal(store.listSessionArchives({ project: 'new' })[0].project, 'new')
 }))
 
 test('tmux registry close and rename operations keep restore state aligned', () => withStore(store => {
@@ -131,6 +193,17 @@ test('session archives persist metadata and transcript details', () => withStore
   assert.equal(detail.capturedText, 'user prompt\nassistant answer')
   assert.equal(detail.closedAt, '2026-07-04T00:10:00.000Z')
 }))
+
+test('restart reconciliation restores only projects and channels missing from one live snapshot', () => {
+  const projects = [{ name: 'live' }, { name: 'missing' }]
+  const channels = [
+    { project: 'live', channelIndex: 0 },
+    { project: 'missing', channelIndex: 1 },
+  ]
+
+  assert.deepEqual(missingTmuxProjects(projects, new Set(['live'])), [{ name: 'missing' }])
+  assert.deepEqual(missingTmuxChannels(channels, new Set(['live:0'])), [{ project: 'missing', channelIndex: 1 }])
+})
 
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
