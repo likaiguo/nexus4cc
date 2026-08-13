@@ -76,6 +76,8 @@
     "deleteEntry": "删除",
     "copyPath": "复制路径",
     "deleteConfirm": "确定要删除 \"{{name}}\" 吗？此操作不可恢复。",
+    "showHidden": "显示隐藏文件",
+    "hideHidden": "不显示隐藏文件",
     "sort": {
       "name": "文件名",
       "modified": "修改时间",

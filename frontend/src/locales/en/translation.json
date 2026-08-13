@@ -76,6 +76,8 @@
     "deleteEntry": "Delete",
     "copyPath": "Copy path",
     "deleteConfirm": "Delete \"{{name}}\"? This cannot be undone.",
+    "showHidden": "Show hidden files",
+    "hideHidden": "Hide hidden files",
     "sort": {
       "name": "Name",
       "modified": "Modified",

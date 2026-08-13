@@ -375,6 +375,20 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   const [pickerEntries, setPickerEntries] = useState<FileEntry[]>([])
   const [pickerLoading, setPickerLoading] = useState(false)
 
+  // 显示隐藏文件开关（默认隐藏，状态持久化到 localStorage）
+  const [showHidden, setShowHidden] = useState(() => {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem('nexus_show_hidden') === '1'
+    }
+    return false
+  })
+
+  function toggleShowHidden() {
+    const next = !showHidden
+    setShowHidden(next)
+    localStorage.setItem('nexus_show_hidden', next ? '1' : '0')
+  }
+
   // 加载目录内容
   const loadEntries = useCallback(async (path: string) => {
     // 取消上一个未完成的请求
@@ -387,7 +401,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     setSizesReady(false)
     setSelectedName(null) // 切换目录时清除选中
     try {
-      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}`, {
+      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=1' : ''}`, {
         headers,
         signal: ctrl.signal,
       })
@@ -412,7 +426,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
       setEntries([])
       setLoading(false)
     }
-  }, [token])
+  }, [token, showHidden])
 
   // 当 currentPath 确定后加载内容
   useEffect(() => {
@@ -431,7 +445,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   const loadPickerEntries = useCallback(async (path: string) => {
     setPickerLoading(true)
     try {
-      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}`, { headers })
+      const r = await fetch(`/api/workspace/files?path=${encodeURIComponent(path)}${showHidden ? '&showHidden=1' : ''}`, { headers })
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
       const dirs = (data.entries || []).filter((e: FileEntry) => e.type === 'dir')
@@ -442,7 +456,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     } finally {
       setPickerLoading(false)
     }
-  }, [token])
+  }, [token, showHidden])
 
   // 当 pickerPath 变化时加载目录
   useEffect(() => {
@@ -986,8 +1000,21 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
         ) : (
           <div />
         )}
-        {/* 排序下拉按钮 */}
-        <div className="relative">
+        <div className="flex items-center gap-1.5">
+          {/* 显示隐藏文件开关 */}
+          <button
+            onClick={toggleShowHidden}
+            className={`flex items-center gap-1 px-2 py-1 rounded border cursor-pointer transition-all duration-100 ${
+              showHidden
+                ? 'bg-nexus-accent border-nexus-accent text-white'
+                : 'bg-transparent border-nexus-border text-nexus-text-2'
+            }`}
+            title={t(showHidden ? 'workspace.hideHidden' : 'workspace.showHidden')}
+          >
+            <Icon name={showHidden ? 'eye' : 'eyeOff'} size={13} />
+          </button>
+          {/* 排序下拉按钮 */}
+          <div className="relative">
           <button
             onClick={() => setShowSortMenu(m => !m)}
             className={`flex items-center gap-1 text-xs px-2 py-1 rounded border cursor-pointer transition-all duration-100 ${
@@ -1019,6 +1046,7 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
 

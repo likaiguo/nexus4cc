@@ -395,8 +395,9 @@ app.get('/api/workspace/files', authMiddleware, async (req, res) => {
     if (p === '~') p = WORKSPACE_ROOT
     if (!isAbsolute(p)) p = join(WORKSPACE_ROOT, p)
     p = normalize(p)
+    const showHidden = req.query.showHidden === '1' || req.query.showHidden === 'true'
     const dirents = await readdir(p, { withFileTypes: true })
-    const visible = dirents.filter(e => !e.name.startsWith('.'))
+    const visible = showHidden ? dirents : dirents.filter(e => !e.name.startsWith('.'))
     const entries = await Promise.all(visible.map(async e => {
       const fullPath = join(p, e.name)
       const st = await statAsync(fullPath)
