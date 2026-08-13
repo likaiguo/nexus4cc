@@ -24,6 +24,7 @@ interface Config {
   THINK_MODEL?: string
   LONG_CONTEXT_MODEL?: string
   DEFAULT_HAIKU_MODEL?: string
+  CONTEXT_TOKENS?: string
   API_TIMEOUT_MS?: string
 }
 
@@ -41,6 +42,7 @@ const EMPTY_CONFIG: Omit<Config, 'id'> = {
   THINK_MODEL: '',
   LONG_CONTEXT_MODEL: '',
   DEFAULT_HAIKU_MODEL: '',
+  CONTEXT_TOKENS: '',
   API_TIMEOUT_MS: '3000000',
 }
 
@@ -104,6 +106,7 @@ export default function SessionManager({ token, onClose }: Props) {
       { key: 'THINK_MODEL',        label: t('apiConfig.thinkingModel'),     placeholder: 'kimi-for-coding' },
       { key: 'LONG_CONTEXT_MODEL', label: t('apiConfig.longContextModel'),  placeholder: 'kimi-for-coding' },
       { key: 'DEFAULT_HAIKU_MODEL',label: t('apiConfig.haikuModel'),        placeholder: 'kimi-for-coding' },
+      { key: 'CONTEXT_TOKENS',     label: t('apiConfig.contextTokens'),     placeholder: '1000000' },
       { key: 'API_TIMEOUT_MS',     label: t('apiConfig.timeout'),           placeholder: '3000000' },
     ]
     return (
@@ -190,7 +193,7 @@ export default function SessionManager({ token, onClose }: Props) {
                 <div className="flex gap-1.5 shrink-0">
                   <button
                     className="bg-transparent border border-nexus-border rounded text-nexus-accent cursor-pointer text-[11px] px-2 py-[3px]"
-                    onPointerDown={() => setEditingConfig({ id: cfg.id, isNew: false, label: cfg.label, BASE_URL: cfg.BASE_URL, AUTH_TOKEN: cfg.AUTH_TOKEN, API_KEY: cfg.API_KEY, DEFAULT_MODEL: cfg.DEFAULT_MODEL, THINK_MODEL: cfg.THINK_MODEL, LONG_CONTEXT_MODEL: cfg.LONG_CONTEXT_MODEL, DEFAULT_HAIKU_MODEL: cfg.DEFAULT_HAIKU_MODEL, API_TIMEOUT_MS: cfg.API_TIMEOUT_MS })}
+                    onPointerDown={() => setEditingConfig({ id: cfg.id, isNew: false, label: cfg.label, BASE_URL: cfg.BASE_URL, AUTH_TOKEN: cfg.AUTH_TOKEN, API_KEY: cfg.API_KEY, DEFAULT_MODEL: cfg.DEFAULT_MODEL, THINK_MODEL: cfg.THINK_MODEL, LONG_CONTEXT_MODEL: cfg.LONG_CONTEXT_MODEL, DEFAULT_HAIKU_MODEL: cfg.DEFAULT_HAIKU_MODEL, CONTEXT_TOKENS: cfg.CONTEXT_TOKENS, API_TIMEOUT_MS: cfg.API_TIMEOUT_MS })}
                   >{t('common.edit')}</button>
                   <button
                     className="bg-transparent border border-nexus-border rounded text-nexus-error cursor-pointer text-[11px] px-2 py-[3px]"

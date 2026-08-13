@@ -193,6 +193,7 @@
     "thinkingModel": "Thinking Model",
     "longContextModel": "Long Context Model",
     "haikuModel": "Haiku Model",
+    "contextTokens": "Context Window (tokens)",
     "timeout": "Timeout (ms)",
     "noConfigs": "No configs. Click \"+ New\" to add an API config.",
     "addNew": "+ New",

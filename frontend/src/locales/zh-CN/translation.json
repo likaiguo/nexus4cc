@@ -193,6 +193,7 @@
     "thinkingModel": "思考模型",
     "longContextModel": "长上下文模型",
     "haikuModel": "Haiku 模型",
+    "contextTokens": "上下文窗口 (tokens)",
     "timeout": "Timeout (ms)",
     "noConfigs": "暂无配置。点击「+ 新建」添加 API 配置。",
     "addNew": "+ 新建",

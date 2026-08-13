@@ -32,6 +32,7 @@ DEFAULT_MODEL=$(cfg DEFAULT_MODEL)
 THINK_MODEL=$(cfg THINK_MODEL)
 LONG_CONTEXT_MODEL=$(cfg LONG_CONTEXT_MODEL)
 DEFAULT_HAIKU_MODEL=$(cfg DEFAULT_HAIKU_MODEL)
+CONTEXT_TOKENS=$(cfg CONTEXT_TOKENS)
 API_TIMEOUT_MS=$(cfg API_TIMEOUT_MS)
 LABEL=$(cfg label)
 
@@ -67,6 +68,11 @@ if [ -n "$LONG_CONTEXT_MODEL" ]; then
 fi
 if [ -n "$API_TIMEOUT_MS" ]; then
     export API_TIMEOUT_MS="$API_TIMEOUT_MS"
+fi
+# 第三方模型（如 deepseek-v4-flash）不在 Claude Code 已知模型表内，默认按 200k 上下文做 auto-compact。
+# 通过 CONTEXT_TOKENS 显式声明真实窗口，避免提前压缩。
+if [ -n "$CONTEXT_TOKENS" ]; then
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT_TOKENS"
 fi
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 

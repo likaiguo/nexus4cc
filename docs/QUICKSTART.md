@@ -154,6 +154,7 @@ mkdir -p data/configs
 | `THINK_MODEL` | "/think" 命令使用的模型 |
 | `LONG_CONTEXT_MODEL` | 长上下文模型 |
 | `DEFAULT_HAIKU_MODEL"` | 快速/低成本模型 |
+| `CONTEXT_TOKENS` | 模型上下文窗口（tokens），可选。映射为 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`，用于第三方模型（如 DeepSeek V4）避免 Claude Code 按默认 200k 提前 auto-compact |
 | `API_TIMEOUT_MS` | API 超时（毫秒） |
 
 ---
