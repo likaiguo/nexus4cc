@@ -1315,7 +1315,7 @@ export default function Terminal({ token }: Props) {
           setToolbarCollapsed(true)
           if (keyboardVisibleRef.current) {
             keyboardVisibleRef.current = false
-            if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
+            if (inputRef.current) inputRef.current.blur()
             if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
           }
           return
@@ -1323,7 +1323,7 @@ export default function Terminal({ token }: Props) {
         // Tap toggles keyboard: tap to show, tap again to hide
         if (keyboardVisibleRef.current) {
           keyboardVisibleRef.current = false
-          if (inputRef.current) { inputRef.current.inputMode = 'none'; inputRef.current.blur() }
+          if (inputRef.current) inputRef.current.blur()
           if (xtermTa) { xtermTa.inputMode = 'none'; xtermTa.blur() }
         } else {
           keyboardVisibleRef.current = true
@@ -1335,7 +1335,11 @@ export default function Terminal({ token }: Props) {
           // the toolbar behind the keyboard. The hidden input sits at
           // position:fixed;top:0 so the browser has no reason to scroll.
           if (xtermTa) xtermTa.inputMode = 'none'
-          if (inputRef.current) { inputRef.current.inputMode = 'text'; inputRef.current.focus() }
+          // 不要动态改 inputMode（如 'none'↔'text'）：这会让 Android 的 Gboard 在聚焦时
+          // 重建 IME 会话并忽略静态的 autocorrect/autocapitalize/spellcheck=off，
+          // 弹出自动补全/候选条。保持与普通输入框一致的静态属性，键盘显隐交给
+          // focus()/blur() 与下方 Layer 2 focusin 守卫处理。
+          if (inputRef.current) inputRef.current.focus()
         }
       }
     }
@@ -1762,6 +1766,7 @@ export default function Terminal({ token }: Props) {
       <input
         ref={inputRef}
         className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
+        inputMode="text"
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"
