@@ -210,7 +210,7 @@ export default function Terminal({ token }: Props) {
   const wsRef = useRef<WebSocket | null>(null)
   const userScrolledRef = useRef(false)
   const lastContainerSizeRef = useRef({ w: 0, h: 0 })
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const [windows, setWindows] = useState<TmuxWindow[]>([])
   const [activeWindowIndex, setActiveWindowIndex] = useState(() => parseInt(localStorage.getItem(WINDOW_KEY) || '0', 10))
   const [showSettings, setShowSettings] = useState(false)
@@ -1335,9 +1335,9 @@ export default function Terminal({ token }: Props) {
           // the toolbar behind the keyboard. The hidden input sits at
           // position:fixed;top:0 so the browser has no reason to scroll.
           if (xtermTa) xtermTa.inputMode = 'none'
-          // 不要动态改 inputMode（如 'none'↔'text'）：这会让 Android 的 Gboard 在聚焦时
-          // 重建 IME 会话并忽略静态的 autocorrect/autocapitalize/spellcheck=off，
-          // 弹出自动补全/候选条。保持与普通输入框一致的静态属性，键盘显隐交给
+          // 键盘捕获用隐藏 <textarea> 而非 <input>：Chrome 对单行 <input> 会弹
+          // Google 自动填充（地址/卡片建议），对 <textarea> 不会（实测验证）。
+          // 保持静态 inputMode="text"，不要动态改 inputMode；键盘显隐交给
           // focus()/blur() 与下方 Layer 2 focusin 守卫处理。
           if (inputRef.current) inputRef.current.focus()
         }
@@ -1528,7 +1528,7 @@ export default function Terminal({ token }: Props) {
 
   const isComposingRef = useRef(false)
 
-  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const native = e.nativeEvent as InputEvent
     if (shouldSkipInput({
       isComposing: native.isComposing,
@@ -1540,7 +1540,7 @@ export default function Terminal({ token }: Props) {
     if (val) { sendToWs(val); e.target.value = '' }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (isComposingRef.current) return
     const mapped = mapSpecialKey(e.key, e.ctrlKey)
     if (mapped !== null) {
@@ -1552,11 +1552,11 @@ export default function Terminal({ token }: Props) {
     // which is guarded by isComposingRef during IME composition.
   }
 
-  function handleCompositionEnd(e: React.CompositionEvent<HTMLInputElement>) {
+  function handleCompositionEnd(e: React.CompositionEvent<HTMLTextAreaElement>) {
     isComposingRef.current = false
     const text = e.data
     if (text) sendToWs(text)
-    ;(e.currentTarget as HTMLInputElement).value = ''
+    ;(e.currentTarget as HTMLTextAreaElement).value = ''
   }
 
   // Track keyboard visibility and adjust layout height on mobile
@@ -1763,7 +1763,7 @@ export default function Terminal({ token }: Props) {
         ? { height: vvHeight ?? '100dvh' }
         : { position: 'fixed', top: 0, left: 0, right: 0, height: vvHeight ?? '100dvh' }
       }>
-      <input
+      <textarea
         ref={inputRef}
         className="fixed top-0 left-0 w-px h-px opacity-[0.01] text-base pointer-events-none -z-10"
         inputMode="text"
@@ -1771,6 +1771,7 @@ export default function Terminal({ token }: Props) {
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
+        rows={1}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onCompositionStart={() => { isComposingRef.current = true }}
