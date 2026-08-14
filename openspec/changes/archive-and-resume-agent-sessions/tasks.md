@@ -36,3 +36,11 @@
 - [x] 5.4 Merge native histories into the archive API surface and add reuse-or-resume quick reply behavior.
 - [x] 5.5 Update the history panel to show linked native sessions and open the composer after continue reply.
 - [x] 5.6 Run backend/frontend verification, browser QA, restart `nexus`, and verify accessibility with rollback on failure.
+
+## 6. Explicit History-to-Channel Binding
+
+- [x] 6.1 Add failing tests for conflict-safe manual binding, link migration, and frontend request parsing.
+- [x] 6.2 Add an authenticated manual-link endpoint that persists the selected native session id on an active target channel.
+- [x] 6.3 Add a project-channel selector, conflict confirmation, and success/error feedback to the history panel.
+- [x] 6.4 Verify manual binding survives store/service restart without automatic backfill undoing an explicit migration.
+- [x] 6.5 Run browser QA, restart `nexus`, and verify service accessibility with rollback on failure.
