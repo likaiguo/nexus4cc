@@ -110,3 +110,24 @@ Nexus SHALL allow a user to continue a resumable native history directly from th
 - **WHEN** a user chooses continue reply for a history with no live linked channel
 - **THEN** Nexus SHALL create a new channel using the exact native session id
 - **AND** Nexus SHALL switch to the channel and expose an immediately focusable reply composer
+
+### Requirement: Users can explicitly bind native history to a channel
+Nexus SHALL allow an authenticated user to persist a selected native agent history as the recovery session for an existing active channel in the current project.
+
+#### Scenario: Bind an unlinked history to an active channel
+- **WHEN** a user selects a native history and an active target channel and confirms manual binding
+- **THEN** Nexus SHALL persist the exact launcher and native session id on the target channel
+- **AND** the durable session link SHALL identify that project and channel after service or machine restart
+- **AND** the current target-channel process SHALL remain running without being restarted or replaced
+
+#### Scenario: Manual binding conflicts with an existing relationship
+- **WHEN** the selected history is actively linked elsewhere or the target channel has another native session id
+- **THEN** Nexus SHALL return a conflict before mutating either relationship
+- **AND** the UI SHALL identify the conflicting project/channel and require explicit confirmation before migration
+
+#### Scenario: Confirmed migration prevents duplicate recovery
+- **WHEN** a user confirms migration of a native history from one channel to another
+- **THEN** Nexus SHALL move the durable link to the target channel
+- **AND** Nexus SHALL clear the migrated session id from the previous channel recovery metadata
+- **AND** automatic backfill SHALL NOT immediately restore that same migrated id to the previous channel
+- **AND** a different future native session in the previous channel SHALL remain eligible for automatic linking

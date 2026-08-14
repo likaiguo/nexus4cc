@@ -16,6 +16,7 @@ import { createPasswordManager, loadEnvFile } from './authPassword.js';
 import { copyMissingLegacyData, resolveNexusDataDir } from './dataDir.js';
 import { buildLauncherCommand, collectProxyVars, inferLauncher } from './launcher.js';
 import { buildSessionArchiveInput, plainTerminalText } from './sessionArchive.js';
+import { bindAgentSessionToChannel, suppressesAgentSessionLink } from './agentSessionBinding.js';
 import { agentSessionLinkMatchesChannel, findBestAgentSession, listAgentSessions, mergeAgentSessionHistory } from './agentSessions.js';
 import { findLiveAgentProcess, parseProcessTable } from './agentProcesses.js';
 import { handlePtyExit } from './ptyLifecycle.js';
@@ -1339,6 +1340,45 @@ app.post('/api/agent-session-history/reply', authMiddleware, (req, res) => {
   }
 })
 
+app.post('/api/agent-session-history/link', authMiddleware, (req, res) => {
+  if (!nexusStore) return res.status(503).json({ error: 'sqlite unavailable' })
+  const project = String(req.body?.project || '')
+  const historyKey = String(req.body?.historyKey || '')
+  const targetChannelIndex = Number(req.body?.targetChannelIndex)
+  const force = req.body?.force === true
+  if (!project || !historyKey || !Number.isInteger(targetChannelIndex) || targetChannelIndex < 0) {
+    return res.status(400).json({ error: 'project, historyKey, and targetChannelIndex required' })
+  }
+  try {
+    const history = buildAgentSessionHistory(project, 500).find(item => item.key === historyKey)
+    if (!history) return res.status(404).json({ error: 'history not found' })
+    if (!history.agentSessionId || history.launcher === 'bash') {
+      return res.status(409).json({ error: 'history has no native agent session to link' })
+    }
+    const targetChannel = nexusStore.getTmuxChannel(project, targetChannelIndex)
+    if (!targetChannel || targetChannel.status !== 'active' || !tmuxWindowExists(project, targetChannelIndex)) {
+      return res.status(404).json({ error: 'target channel is not active' })
+    }
+    if (history.cwd && targetChannel.cwd && normalize(history.cwd) !== normalize(targetChannel.cwd)) {
+      return res.status(409).json({
+        error: 'history and target channel use different working directories',
+        code: 'agent_session_link_cwd_mismatch',
+      })
+    }
+    const result = bindAgentSessionToChannel({ store: nexusStore, history, targetChannel, force })
+    if (result.kind === 'conflict') {
+      return res.status(409).json({
+        error: 'manual link requires confirmation',
+        code: 'agent_session_link_conflict',
+        conflicts: result.conflicts,
+      })
+    }
+    res.json({ ok: true, historyKey, ...result })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.get('/api/session-archives/:id', authMiddleware, (req, res) => {
   if (!nexusStore?.getSessionArchive) return res.status(503).json({ error: 'sqlite unavailable' })
   try {
@@ -1640,10 +1680,12 @@ function liveAgentProcess(channel, processes = null) {
 }
 
 function persistChannelAgentSession(channel, session, source) {
+  const metadata = { ...(channel.metadata || {}), agentSessionId: session.id }
+  delete metadata.manualUnlinkedAgentSessionId
   const updated = nexusStore.upsertTmuxChannel({
     ...channel,
     launcher: session.launcher,
-    metadata: { ...(channel.metadata || {}), agentSessionId: session.id },
+    metadata,
   })
   nexusStore.upsertAgentSessionLink({
     launcher: session.launcher,
@@ -1666,6 +1708,7 @@ function resolveChannelAgentSession(channel, sessions = null, processes = null) 
   const launcher = process?.launcher || channel.launcher
   const available = sessions || listAgentSessions({ cwd: channel.cwd, limit: 500 })
   if (process?.sessionId) {
+    if (suppressesAgentSessionLink(channel, process.sessionId)) return channel
     return persistChannelAgentSession(channel, { id: process.sessionId, launcher }, 'process-command')
   }
   const linkedSessionKeys = new Set(
@@ -1673,6 +1716,8 @@ function resolveChannelAgentSession(channel, sessions = null, processes = null) 
       .filter(link => link.project !== channel.project || link.channelIndex !== channel.channelIndex)
       .map(link => `${link.launcher}:${link.agentSessionId}`),
   )
+  const manuallyUnlinkedId = String(channel?.metadata?.manualUnlinkedAgentSessionId || '')
+  if (manuallyUnlinkedId) linkedSessionKeys.add(`${launcher}:${manuallyUnlinkedId}`)
   const match = findBestAgentSession({
     channel: { ...channel, launcher },
     sessions: available,

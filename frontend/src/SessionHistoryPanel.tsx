@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAuthFetch } from './AuthSessionProvider'
 import { Icon } from './icons'
+import { SessionHistoryLinkControls } from './SessionHistoryLinkControls'
 import { SessionHistoryList } from './SessionHistoryList'
 import {
   asRecord,
@@ -228,6 +229,14 @@ export default function SessionHistoryPanel({ token, currentProject, currentChan
                 {busyAction === 'reply' ? t('sessionArchives.resuming') : t('sessionArchives.continueReply')}
               </button>
             </div>
+            <SessionHistoryLinkControls
+              token={token}
+              currentProject={currentProject}
+              currentChannelIndex={currentChannelIndex}
+              selected={selected}
+              disabled={busyAction !== null}
+              onLinked={loadHistory}
+            />
             {detailLoading ? (
               <div className="p-4 text-xs text-nexus-text-2">{t('common.loading')}</div>
             ) : (
