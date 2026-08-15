@@ -264,6 +264,8 @@
     "theme": "Theme",
     "themeDark": "Dark",
     "themeLight": "Light",
+    "terminalScreenReader": "Screen reader compatibility",
+    "terminalScreenReaderDesc": "Expose terminal rows to VoiceOver or NVDA. Long scrollback uses more resources when enabled.",
     "security": "Security",
     "currentPassword": "Current password",
     "newPassword": "New password",

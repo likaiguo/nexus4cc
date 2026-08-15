@@ -7,7 +7,9 @@ import { useAuthFetch } from './AuthSessionProvider'
 interface Props {
   token: string
   themeMode: 'dark' | 'light'
+  screenReaderMode: boolean
   onToggleTheme: () => void
+  onScreenReaderModeChange: (enabled: boolean) => void
   onClose: () => void
   onOpenApiConfig: () => void
 }
@@ -22,7 +24,7 @@ const UPDATE_CMD = 'git pull && cd frontend && npm run build && cd .. && pm2 res
 type UpdateStatus = 'idle' | 'checking' | 'upToDate' | 'available' | 'dirty' | 'error'
 type PasswordStatus = 'idle' | 'saving' | 'saved' | 'error'
 
-export default function GeneralSettings({ token, themeMode, onToggleTheme, onClose, onOpenApiConfig }: Props) {
+export default function GeneralSettings({ token, themeMode, screenReaderMode, onToggleTheme, onScreenReaderModeChange, onClose, onOpenApiConfig }: Props) {
   const { t, i18n } = useTranslation()
   const authFetch = useAuthFetch()
   const [currentVersion, setCurrentVersion] = useState<string>('')
@@ -193,7 +195,7 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
             </div>
 
             {/* Theme */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between mb-3">
               <span className="text-sm text-nexus-text">{t('settings.theme')}</span>
               <div className="flex gap-1">
                 <button
@@ -210,6 +212,19 @@ export default function GeneralSettings({ token, themeMode, onToggleTheme, onClo
                 </button>
               </div>
             </div>
+
+            <label className="flex items-center justify-between gap-3 cursor-pointer">
+              <span className="min-w-0">
+                <span className="block text-sm text-nexus-text">{t('settings.terminalScreenReader')}</span>
+                <span className="block text-xs text-nexus-text-2 mt-0.5">{t('settings.terminalScreenReaderDesc')}</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={screenReaderMode}
+                onChange={event => onScreenReaderModeChange(event.currentTarget.checked)}
+                className="h-4 w-4 shrink-0 accent-nexus-accent"
+              />
+            </label>
           </div>
 
           <div className="border-t border-nexus-border pt-4">

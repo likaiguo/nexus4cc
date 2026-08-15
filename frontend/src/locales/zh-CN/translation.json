@@ -264,6 +264,8 @@
     "theme": "主题",
     "themeDark": "暗色",
     "themeLight": "亮色",
+    "terminalScreenReader": "屏幕阅读兼容模式",
+    "terminalScreenReaderDesc": "供读屏软件读取终端内容；启用会减慢滚动。",
     "security": "安全",
     "currentPassword": "当前密码",
     "newPassword": "新密码",

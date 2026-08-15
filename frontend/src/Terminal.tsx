@@ -14,6 +14,10 @@ import { getWindowStatus, STATUS_DOT_COLOR, STATUS_DOT_TITLE } from './windowSta
 import { clampCursor, shouldCaptureGlobalTerminalKey, shouldCloseScrollbackOnScroll } from './terminalInteraction'
 import { terminalTextToHtml } from './terminalHistoryRendering'
 import { completeSessionContinuation } from './sessionHistory'
+import {
+  readTerminalScreenReaderMode,
+  writeTerminalScreenReaderMode,
+} from './terminalPerformance'
 import { useAuthFetch } from './AuthSessionProvider'
 import {
   isAuthWebSocketClose,
@@ -467,6 +471,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
   const [showNewWindow, setShowNewWindow] = useState(false)
   const [showSessionDrawer, setShowSessionDrawer] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme)
+  const [screenReaderMode, setScreenReaderMode] = useState(readTerminalScreenReaderMode)
 
   const [isWidePC, setIsWidePC] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 768)
   const [isConnecting, setIsConnecting] = useState(false)
@@ -684,6 +689,13 @@ export default function Terminal({ token, onAuthExpired }: Props) {
     setThemeMode(newMode)
     applyTheme(newMode)
   }, [themeMode, applyTheme])
+
+  const handleScreenReaderModeChange = useCallback((enabled: boolean) => {
+    writeTerminalScreenReaderMode(enabled)
+    setScreenReaderMode(enabled)
+    const term = termRef.current
+    if (term) term.options.screenReaderMode = enabled
+  }, [])
 
   const addUploadNotification = useCallback((filename: string, path: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
@@ -1814,7 +1826,7 @@ export default function Terminal({ token, onAuthExpired }: Props) {
       cursorBlink: true,
       cursorInactiveStyle: 'block',
       allowProposedApi: true,
-      screenReaderMode: true,
+      screenReaderMode: readTerminalScreenReaderMode(),
     })
 
     const fitAddon = new FitAddon()
@@ -1956,7 +1968,6 @@ export default function Terminal({ token, onAuthExpired }: Props) {
       if (seq) {
         term.focus()
         wsRef.current?.send(seq)
-        requestAnimationFrame(() => term.refresh(0, Math.max(0, term.rows - 1)))
       }
     }
 
@@ -3399,7 +3410,9 @@ export default function Terminal({ token, onAuthExpired }: Props) {
           <GeneralSettings
             token={token}
             themeMode={themeMode}
+            screenReaderMode={screenReaderMode}
             onToggleTheme={toggleTheme}
+            onScreenReaderModeChange={handleScreenReaderModeChange}
             onClose={() => setShowGeneralSettings(false)}
             onOpenApiConfig={() => { setShowGeneralSettings(false); setShowSettings(true) }}
           />

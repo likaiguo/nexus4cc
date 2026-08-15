@@ -84,7 +84,7 @@ Spacing follows Tailwind's 4px unit.
 ### Terminal Surface
 - **Structure**: xterm container fills the remaining workspace.
 - **States**: connecting overlay, scrolled-up button, active Direct Terminal input.
-- **Accessibility**: preserve xterm focus and native paste/IME behavior.
+- **Accessibility**: preserve xterm focus and native paste/IME behavior. Screen-reader row mirroring is an explicit compatibility setting because it adds per-scroll DOM work; Terminal History remains the selectable reading surface when the compatibility mirror is off.
 - **Motion**: no decorative animation; spinner only for connection state.
 
 ### Composer Panel
