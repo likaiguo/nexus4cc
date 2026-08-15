@@ -19,6 +19,21 @@ interface FileEntry {
   mtime: number
 }
 
+interface GitChange {
+  indexStatus: string
+  worktreeStatus: string
+  relativePath: string
+  name: string
+  path: string
+  directory: string
+  exists: boolean
+}
+
+interface GitChangesResponse {
+  repoRoot: string | null
+  changes: GitChange[]
+}
+
 interface Props {
   token: string
   onClose: () => void
@@ -80,8 +95,10 @@ function clampEditorFontSize(size: number): number {
 function clampFloatingToolbarPosition(position: FloatingToolbarPosition, bounds?: FloatingToolbarBounds): FloatingToolbarPosition {
   const fallbackWidth = typeof window === 'undefined' ? 360 : window.innerWidth
   const fallbackHeight = typeof window === 'undefined' ? 640 : window.innerHeight
-  const width = Number.isFinite(bounds?.width) && bounds!.width > 0 ? bounds!.width : fallbackWidth
-  const height = Number.isFinite(bounds?.height) && bounds!.height > 0 ? bounds!.height : fallbackHeight
+  const boundsWidth = bounds?.width
+  const boundsHeight = bounds?.height
+  const width = typeof boundsWidth === 'number' && Number.isFinite(boundsWidth) && boundsWidth > 0 ? boundsWidth : fallbackWidth
+  const height = typeof boundsHeight === 'number' && Number.isFinite(boundsHeight) && boundsHeight > 0 ? boundsHeight : fallbackHeight
   const maxX = Math.max(
     EDITOR_FLOATING_TOOLBAR_MIN_GAP,
     width - EDITOR_FLOATING_TOOLBAR_WIDTH - EDITOR_FLOATING_TOOLBAR_MIN_GAP,
@@ -329,6 +346,11 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+  const [gitChanges, setGitChanges] = useState<GitChange[]>([])
+  const [gitRepoRoot, setGitRepoRoot] = useState<string | null>(null)
+  const [gitChangesLoading, setGitChangesLoading] = useState(false)
+  const [gitChangesError, setGitChangesError] = useState('')
+  const [showGitChanges, setShowGitChanges] = useState(false)
 
   const headers = { Authorization: `Bearer ${token}` }
 
@@ -520,12 +542,31 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     }
   }, [authFetch, token, showHidden, onPathChange])
 
+  const loadGitChanges = useCallback(async (path: string) => {
+    setGitChangesLoading(true)
+    setGitChangesError('')
+    try {
+      const response = await authFetch(`/api/workspace/changes?path=${encodeURIComponent(path)}`, { headers })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data = await response.json() as GitChangesResponse
+      setGitRepoRoot(data.repoRoot)
+      setGitChanges(Array.isArray(data.changes) ? data.changes : [])
+    } catch (error: unknown) {
+      setGitRepoRoot(null)
+      setGitChanges([])
+      setGitChangesError(error instanceof Error ? error.message : 'Failed to load changes')
+    } finally {
+      setGitChangesLoading(false)
+    }
+  }, [authFetch, token])
+
   // 当 currentPath 确定后加载内容
   useEffect(() => {
     if (currentPath !== null) {
       loadEntries(currentPath)
+      void loadGitChanges(currentPath)
     }
-  }, [currentPath, loadEntries])
+  }, [currentPath, loadEntries, loadGitChanges])
 
   // 获取某一条目的完整路径
   function getEntryPath(name: string): string {
@@ -687,17 +728,17 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   }
 
   // 获取文件的完整 URL（带上 token 用于浏览器直接访问）
-  function getFileUrl(name: string): string {
-    if (!currentPath || !workspaceRoot) return ''
+  function getFileUrl(name: string, absolutePath?: string): string {
+    if ((!currentPath && !absolutePath) || !workspaceRoot) return ''
 
-    const filePath = currentPath.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`
+    const filePath = absolutePath || (currentPath?.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`)
     // 统一使用 /workspace?path=xxx 格式，避免不同路径格式问题
     return `/workspace?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(token)}`
   }
 
   // 打开文件（查看）
-  function openFile(name: string) {
-    const url = getFileUrl(name)
+  function openFile(name: string, absolutePath?: string) {
+    const url = getFileUrl(name, absolutePath)
     if (!url) return
     const a = document.createElement('a')
     a.href = url
@@ -779,20 +820,20 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
   }
 
   // 打开文件编辑器
-  async function openEditor(name: string, mode: EditorMode = 'preview') {
-    if (!currentPath) return
+  async function openEditor(name: string, mode: EditorMode = 'preview', absolutePath?: string) {
+    if (!currentPath && !absolutePath) return
     // 前端预检：已知二进制后缀直接走浏览器原生打开
-    if (!isTextFile(name)) {
+    if (!absolutePath && !isTextFile(name)) {
       openFile(name)
       return
     }
-    const filePath = currentPath.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`
+    const filePath = absolutePath || (currentPath?.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`)
     try {
       const r = await authFetch(`/api/workspace/file?path=${encodeURIComponent(filePath)}`, { headers })
       if (!r.ok) {
         if (r.status === 415) {
           // 服务器检测到二进制内容 → 回退浏览器原生打开
-          openFile(name)
+          openFile(name, absolutePath)
           return
         }
         if (r.status === 413) {
@@ -1093,6 +1134,23 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
     : null
   const isEditorPreviewMode = editorMode === 'preview'
   const isEditorMarkdownPreview = editingFile !== null && isMarkdownFile(editingFile.name) && isEditorPreviewMode
+
+  function openChangedDirectory(change: GitChange) {
+    setCurrentPath(change.directory)
+    setShowGitChanges(false)
+  }
+
+  function openChangedFile(change: GitChange) {
+    if (!change.exists) {
+      openChangedDirectory(change)
+      return
+    }
+    void openEditor(change.name, 'preview', change.path)
+  }
+
+  function gitStatusLabel(change: GitChange): string {
+    return `${change.indexStatus}${change.worktreeStatus}`.trim() || '?'
+  }
   return (
     <>
     <div className={overlay
@@ -1112,12 +1170,27 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
             {t('workspace.title')}
           </span>
         </div>
-        <button
-          onClick={onClose}
-          className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md shrink-0"
-        >
-          <Icon name="x" size={20} />
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowGitChanges(value => !value)}
+            aria-expanded={showGitChanges}
+            aria-controls="workspace-git-changes"
+            aria-label={`${t('workspace.changedFiles')}: ${gitChangesLoading ? '…' : gitChanges.length}`}
+            className={`h-8 flex items-center gap-1.5 px-2.5 rounded-md border text-xs ${showGitChanges ? 'bg-nexus-accent border-nexus-accent text-white' : 'bg-transparent border-nexus-border text-nexus-text-2 hover:text-nexus-text'}`}
+            title={t('workspace.changedFiles')}
+          >
+            <Icon name="edit" size={14} />
+            <span>{gitChangesLoading ? '…' : gitChanges.length}</span>
+          </button>
+          <button
+            onClick={onClose}
+            className="bg-transparent border-none text-nexus-text-2 cursor-pointer p-1.5 flex items-center justify-center rounded-md"
+            aria-label={t('common.close')}
+          >
+            <Icon name="x" size={20} />
+          </button>
+        </div>
       </div>
       )}
 
@@ -1219,6 +1292,67 @@ const WorkspaceBrowser = forwardRef<WorkspaceBrowserHandle, Props>(function Work
           </div>
         </div>
       </div>
+
+      {showGitChanges && (
+        <div id="workspace-git-changes" className="flex-shrink-0 border-b border-nexus-border bg-nexus-bg max-h-[42dvh] overflow-y-auto">
+          <div className="sticky top-0 z-10 flex items-center justify-between gap-2 px-4 py-2 bg-nexus-bg-2 border-b border-nexus-border">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-nexus-text">{t('workspace.changedFiles')}</div>
+              {gitRepoRoot && <div className="text-[11px] text-nexus-muted font-mono truncate" title={gitRepoRoot}>{gitRepoRoot}</div>}
+            </div>
+            <button
+              type="button"
+              onClick={() => currentPath && void loadGitChanges(currentPath)}
+              className="p-1.5 text-nexus-text-2 hover:text-nexus-accent"
+              title={t('common.refresh')}
+              aria-label={t('common.refresh')}
+            >
+              <Icon name="refresh" size={15} />
+            </button>
+          </div>
+          {gitChangesError ? (
+            <div className="px-4 py-3 text-xs text-nexus-error">{gitChangesError}</div>
+          ) : !gitChangesLoading && gitChanges.length === 0 ? (
+            <div className="px-4 py-4 text-sm text-nexus-muted">{t(gitRepoRoot ? 'workspace.changesEmpty' : 'workspace.notGitRepository')}</div>
+          ) : (
+            <div className="divide-y divide-nexus-border">
+              {gitChanges.map(change => (
+                <div key={`${change.indexStatus}${change.worktreeStatus}:${change.path}`} className="flex items-center gap-2 px-3 py-2">
+                  <span className="w-7 shrink-0 text-center text-[11px] font-mono font-semibold text-nexus-accent">{gitStatusLabel(change)}</span>
+                  <button
+                    type="button"
+                    onClick={() => openChangedFile(change)}
+                    className="flex-1 min-w-0 text-left"
+                    title={change.path}
+                  >
+                    <span className="block text-sm text-nexus-text font-mono truncate">{change.relativePath}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openChangedDirectory(change)}
+                    className="p-1.5 text-nexus-text-2 hover:text-nexus-accent shrink-0"
+                    title={t('workspace.openContainingDir')}
+                    aria-label={`${t('workspace.openContainingDir')}: ${change.directory}`}
+                  >
+                    <Icon name="folderOpen" size={16} />
+                  </button>
+                  {change.exists && (
+                    <button
+                      type="button"
+                      onClick={() => openChangedFile(change)}
+                      className="p-1.5 text-nexus-text-2 hover:text-nexus-accent shrink-0"
+                      title={t('workspace.viewChangedFile')}
+                      aria-label={`${t('workspace.viewChangedFile')}: ${change.relativePath}`}
+                    >
+                      <Icon name="eye" size={16} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">

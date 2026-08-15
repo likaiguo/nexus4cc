@@ -24,6 +24,7 @@ import { isSafeTmuxSessionName } from './tmuxNames.js';
 import { resolveTerminalEnvironment } from './terminalEnvironment.js';
 import { missingTmuxChannels, missingTmuxProjects, reconcileTmuxProjectSnapshot } from './tmuxReconciliation.js';
 import { WorkspaceFileError, readEditableWorkspaceFile, saveEditableWorkspaceFile } from './workspaceFiles.js';
+import { listGitChanges } from './gitChanges.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = join(__dirname, '.env');
@@ -765,6 +766,13 @@ app.get('/api/workspace/files', authMiddleware, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+app.get('/api/workspace/changes', authMiddleware, (req, res) => {
+  let targetPath = req.query.path || WORKSPACE_ROOT
+  if (targetPath === '~') targetPath = WORKSPACE_ROOT
+  if (!isAbsolute(targetPath)) targetPath = join(WORKSPACE_ROOT, targetPath)
+  res.json(listGitChanges(normalize(targetPath)))
 })
 
 // 静态文件服务：工作目录文件直接访问（/workspace/相对路径）

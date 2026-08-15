@@ -114,6 +114,13 @@ Spacing follows Tailwind's 4px unit.
 - **Accessibility**: every history row is a button, linked status has a text alternative, the channel selector has a visible label, conflict/success feedback uses alert/status semantics, transcript remains selectable, and continue reply moves focus to the Composer after channel activation.
 - **Motion**: none required.
 
+### Workspace Navigator
+- **Structure**: the workspace browser header exposes a compact code-change count; its expanded list pairs each changed file with direct preview and containing-directory actions. New-project selection starts with recent workspace paths and an equal-weight browse-other-directory entry before showing the directory tree.
+- **States**: Git repository with changes, clean repository, non-Git directory, changes loading/error, recent paths, no recent paths, and directory browser open.
+- **Spacing**: reuse dense 8-12px list rows and one-column mobile / two-column desktop quick-selection layouts.
+- **Accessibility**: changed-file names and containing-directory controls are separate labelled buttons; recent paths remain readable in mono text and all icon-only actions have labels and titles.
+- **Motion**: use only the existing 100-150ms color feedback; expanding navigation layers does not animate layout dimensions.
+
 ## 6. Motion & Interaction
 
 | Type | Duration | Easing | Usage |
