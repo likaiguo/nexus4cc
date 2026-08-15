@@ -74,6 +74,14 @@ test('workspace browser reports server-normalized paths after directory loads', 
   assert.match(workspaceBrowserSource, /\}, \[authFetch, token, onPathChange\]\)/)
 })
 
+test('workspace browser exposes Git changes with direct file and directory actions', () => {
+  assert.match(workspaceBrowserSource, /\/api\/workspace\/changes\?path=/)
+  assert.match(workspaceBrowserSource, /openEditor\(change\.name, 'preview', change\.path\)/)
+  assert.match(workspaceBrowserSource, /setCurrentPath\(change\.directory\)/)
+  assert.match(workspaceBrowserSource, /workspace\.openContainingDir/)
+  assert.match(workspaceBrowserSource, /workspace\.viewChangedFile/)
+})
+
 test('workspace browser uses code editor helper and component for editable files', () => {
   assert.match(workspaceBrowserSource, /import WorkspaceCodeEditor from '\.\/WorkspaceCodeEditor'/)
   assert.match(workspaceBrowserSource, /detectWorkspaceEditorFileType/)
